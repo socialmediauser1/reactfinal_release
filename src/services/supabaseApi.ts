@@ -22,10 +22,18 @@
  *   category text not null default 'feature',
  *   assignee text,
  *   priority text,
+ *   due_date date,
+ *   tags text[] not null default '{}',
  *   created_at timestamptz not null default now(),
  *   column_entered_at timestamptz not null default now(),
- *   moves jsonb not null default '[]'::jsonb
+ *   moves jsonb not null default '[]'::jsonb,
+ *   activities jsonb not null default '[]'::jsonb
  * );
+ *
+ * Migration for existing projects:
+ * alter table public.cards add column if not exists due_date date;
+ * alter table public.cards add column if not exists tags text[] not null default '{}';
+ * alter table public.cards add column if not exists activities jsonb not null default '[]'::jsonb;
  *
  * create table public.archived_cards (
  *   id uuid primary key,
@@ -39,7 +47,10 @@
 import { supabase } from "../lib/supabase";
 import type {
   ArchivedCardEntry,
+  BoardTemplateId,
   Card,
+  CardActivity,
+  CardActivityType,
   CardCategory,
   CardMove,
   CardPriority,
@@ -55,12 +66,21 @@ import type {
   UpdateCardRequest,
   UpdateColumnRequest,
 } from "./api";
+import { getBoardTemplate } from "./api";
+import { normalizeDueDate, normalizeTags } from "../lib/kanbanUtils";
 
 let currentBoardId: string | null = null;
 
 export function setActiveBoardId(boardId: string): void {
   currentBoardId = boardId;
-  localState.filter = { category: null, swimlaneValue: null, searchQuery: "" };
+  localState.filter = {
+    category: null,
+    swimlaneValue: null,
+    searchQuery: "",
+    tag: null,
+    dueStatus: "all",
+    sortMode: "created",
+  };
   localState.swimlaneGroupBy = null;
 }
 
@@ -70,7 +90,14 @@ function requireBoardId(): string {
 }
 
 const localState = {
-  filter: { category: null, swimlaneValue: null, searchQuery: "" } as FilterState,
+  filter: {
+    category: null,
+    swimlaneValue: null,
+    searchQuery: "",
+    tag: null,
+    dueStatus: "all",
+    sortMode: "created",
+  } as FilterState,
   swimlaneGroupBy: null as SwimlaneGroupBy | null,
 };
 
@@ -108,17 +135,53 @@ function rowToCard(row: any): Card {
     columnId: row.column_id as string,
     assignee: row.assignee != null ? (row.assignee as string) : undefined,
     priority: row.priority != null ? (row.priority as CardPriority) : undefined,
+    dueDate: row.due_date != null ? (row.due_date as string) : undefined,
+    tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
     createdAt: row.created_at as string,
     columnEnteredAt: row.column_entered_at as string,
     moves: (row.moves as CardMove[]) ?? [],
+    activities: (row.activities as CardActivity[]) ?? [],
+  };
+}
+
+function normalizeStoredCard(card: Card): Card {
+  return {
+    ...card,
+    dueDate: card.dueDate,
+    tags: Array.isArray(card.tags) ? card.tags : [],
+    moves: Array.isArray(card.moves) ? card.moves : [],
+    activities: Array.isArray(card.activities) ? card.activities : [],
   };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function rowToArchivedEntry(row: any): ArchivedCardEntry {
   return {
-    card: row.card as Card,
+    card: normalizeStoredCard(row.card as Card),
     archivedAt: row.archived_at as string,
+  };
+}
+
+function getOffsetDate(offsetDays: number | undefined): string | undefined {
+  if (offsetDays === undefined) return undefined;
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function createActivity(type: CardActivityType, message: string): CardActivity {
+  return {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    type,
+    message,
+  };
+}
+
+function appendActivity(card: Card, type: CardActivityType, message: string): Card {
+  return {
+    ...card,
+    activities: [...(card.activities ?? []), createActivity(type, message)],
   };
 }
 
@@ -132,10 +195,50 @@ function cardToInsertRow(card: Card, userId: string): Record<string, unknown> {
     category: card.category,
     assignee: card.assignee ?? null,
     priority: card.priority ?? null,
+    due_date: card.dueDate ?? null,
+    tags: card.tags ?? [],
     created_at: card.createdAt,
     column_entered_at: card.columnEnteredAt,
     moves: card.moves,
+    activities: card.activities ?? [],
   };
+}
+
+async function createSupabaseCard(payload: CreateCardRequest, activityType: CardActivityType = "created"): Promise<Card> {
+  const userId = await getCurrentUserId();
+  const boardId = requireBoardId();
+
+  const { data: columnRows } = await supabase
+    .from("columns")
+    .select("id")
+    .eq("board_id", boardId)
+    .order("order", { ascending: true })
+    .limit(1);
+  const defaultColumnId = columnRows?.[0]?.id as string | undefined;
+  const resolvedColumnId = payload.columnId ?? defaultColumnId ?? "";
+  const now = new Date().toISOString();
+
+  const row = {
+    user_id: userId,
+    column_id: resolvedColumnId,
+    title: payload.title.trim(),
+    description: payload.description ?? "",
+    category: payload.category ?? "feature",
+    assignee: payload.assignee?.trim() || null,
+    priority: payload.priority ?? "medium",
+    due_date: normalizeDueDate(payload.dueDate) ?? null,
+    tags: normalizeTags(payload.tags),
+    created_at: now,
+    column_entered_at: now,
+    moves: [],
+    activities: [
+      createActivity(activityType, activityType === "template" ? "Created from template" : "Created card"),
+    ],
+  };
+
+  const { data, error } = await supabase.from("cards").insert(row).select().single();
+  if (error) throw error;
+  return rowToCard(data);
 }
 
 export const supabaseKanbanApi: KanbanApiService = {
@@ -154,15 +257,12 @@ export const supabaseKanbanApi: KanbanApiService = {
     let columns: Column[];
     const existing = columnRows ?? [];
 
-    const existingTitles = new Set(existing.map((r) => r.title as string));
-    const missingDefs = DEFAULT_COLUMNS.filter((d) => !existingTitles.has(d.title));
-
-    if (missingDefs.length > 0) {
-      const toInsert = missingDefs.map((d, i) => ({
+    if (existing.length === 0) {
+      const toInsert = DEFAULT_COLUMNS.map((d, i) => ({
         user_id: userId,
         board_id: boardId,
         title: d.title,
-        order: 100 + i,
+        order: i,
         ...(d.wip_limit !== null ? { wip_limit: d.wip_limit } : {}),
       }));
       const { data: inserted, error: insertErr } = await supabase
@@ -170,24 +270,7 @@ export const supabaseKanbanApi: KanbanApiService = {
         .insert(toInsert)
         .select();
       if (insertErr) throw insertErr;
-
-      const orderPriority: Record<string, number> = { "To Do": 0, "In Progress": 1, "Done": 2 };
-      const allCols = [
-        ...existing.map(rowToColumn),
-        ...(inserted ?? []).map(rowToColumn),
-      ].sort((a, b) => {
-        const ao = orderPriority[a.title] ?? 3 + a.order;
-        const bo = orderPriority[b.title] ?? 3 + b.order;
-        return ao - bo;
-      });
-
-      for (let i = 0; i < allCols.length; i++) {
-        if (allCols[i].order !== i) {
-          await supabase.from("columns").update({ order: i }).eq("id", allCols[i].id);
-          allCols[i] = { ...allCols[i], order: i };
-        }
-      }
-      columns = allCols;
+      columns = (inserted ?? []).map(rowToColumn);
     } else {
       columns = existing.map(rowToColumn);
     }
@@ -216,38 +299,12 @@ export const supabaseKanbanApi: KanbanApiService = {
   },
 
   async createCard(payload: CreateCardRequest): Promise<Card> {
-    const userId = await getCurrentUserId();
-    const boardId = requireBoardId();
-
-    const { data: columnRows } = await supabase
-      .from("columns")
-      .select("id")
-      .eq("board_id", boardId)
-      .order("order", { ascending: true })
-      .limit(1);
-    const defaultColumnId = columnRows?.[0]?.id as string | undefined;
-    const resolvedColumnId = payload.columnId ?? defaultColumnId ?? "";
-    const now = new Date().toISOString();
-
-    const row = {
-      user_id: userId,
-      column_id: resolvedColumnId,
-      title: payload.title.trim(),
-      description: payload.description ?? "",
-      category: payload.category ?? "feature",
-      assignee: payload.assignee?.trim() ?? null,
-      priority: payload.priority ?? "medium",
-      created_at: now,
-      column_entered_at: now,
-      moves: [],
-    };
-
-    const { data, error } = await supabase.from("cards").insert(row).select().single();
-    if (error) throw error;
-    return rowToCard(data);
+    return createSupabaseCard(payload);
   },
 
   async updateCard(cardId: string, payload: UpdateCardRequest): Promise<Card | null> {
+    const { data: existing } = await supabase.from("cards").select("*").eq("id", cardId).single();
+    const currentActivities = existing ? rowToCard(existing).activities : [];
     const updates: Record<string, unknown> = {};
     if (payload.title !== undefined && payload.title.trim()) {
       updates.title = payload.title.trim();
@@ -256,6 +313,11 @@ export const supabaseKanbanApi: KanbanApiService = {
     if (payload.category !== undefined) updates.category = payload.category;
     if (payload.assignee !== undefined) updates.assignee = payload.assignee.trim() || null;
     if (payload.priority !== undefined) updates.priority = payload.priority;
+    if (Object.prototype.hasOwnProperty.call(payload, "dueDate")) {
+      updates.due_date = normalizeDueDate(payload.dueDate) ?? null;
+    }
+    if (payload.tags !== undefined) updates.tags = normalizeTags(payload.tags);
+    updates.activities = [...currentActivities, createActivity("edited", "Updated card")];
 
     const { data, error } = await supabase
       .from("cards")
@@ -279,14 +341,20 @@ export const supabaseKanbanApi: KanbanApiService = {
     if (existing.column_id === targetColumnId) return rowToCard(existing);
 
     const movedAt = new Date().toISOString();
+    const targetColumn = await supabase.from("columns").select("title").eq("id", targetColumnId).single();
+    const currentCard = rowToCard(existing);
     const newMoves: CardMove[] = [
       ...((existing.moves as CardMove[]) ?? []),
       { at: movedAt, fromColumnId: existing.column_id as string, toColumnId: targetColumnId },
     ];
+    const activities = [
+      ...currentCard.activities,
+      createActivity("moved", `Moved to ${(targetColumn.data?.title as string | undefined) ?? "another column"}`),
+    ];
 
     const { data, error } = await supabase
       .from("cards")
-      .update({ column_id: targetColumnId, column_entered_at: movedAt, moves: newMoves })
+      .update({ column_id: targetColumnId, column_entered_at: movedAt, moves: newMoves, activities })
       .eq("id", cardId)
       .select()
       .single();
@@ -312,7 +380,7 @@ export const supabaseKanbanApi: KanbanApiService = {
 
     if (fetchErr || !cardRow) return null;
 
-    const card = rowToCard(cardRow);
+    const card = appendActivity(rowToCard(cardRow), "archived", "Archived card");
     const archivedAt = new Date().toISOString();
 
     const { error: delErr } = await supabase.from("cards").delete().eq("id", cardId);
@@ -337,11 +405,11 @@ export const supabaseKanbanApi: KanbanApiService = {
 
     if (fetchErr || !archivedRow) return null;
 
-    const archivedCard = archivedRow.card as Card;
+    const archivedCard = normalizeStoredCard(archivedRow.card as Card);
     const resolvedColumnId = targetColumnId ?? archivedCard.columnId;
     const restoredAt = new Date().toISOString();
 
-    const card: Card =
+    const cardWithoutActivity: Card =
       archivedCard.columnId === resolvedColumnId
         ? { ...archivedCard, columnEnteredAt: restoredAt }
         : {
@@ -357,6 +425,7 @@ export const supabaseKanbanApi: KanbanApiService = {
               },
             ],
           };
+    const card = appendActivity(cardWithoutActivity, "restored", "Restored card");
 
     const { error: delErr } = await supabase
       .from("archived_cards")
@@ -447,7 +516,7 @@ export const supabaseKanbanApi: KanbanApiService = {
       .from("columns")
       .select("*")
       .eq("board_id", boardId);
-    if (!allCols || allCols.length <= 3) return false;
+    if (!allCols || allCols.length <= 2) return false;
 
     const remaining = allCols.filter((c) => c.id !== columnId);
     if (remaining.length === allCols.length) return false;
@@ -462,7 +531,7 @@ export const supabaseKanbanApi: KanbanApiService = {
     const movedAt = new Date().toISOString();
     const { data: cardsToMove } = await supabase
       .from("cards")
-      .select("id, moves")
+      .select("id, moves, activities")
       .eq("column_id", columnId);
 
     for (const cardRow of cardsToMove ?? []) {
@@ -470,9 +539,13 @@ export const supabaseKanbanApi: KanbanApiService = {
         ...((cardRow.moves as CardMove[]) ?? []),
         { at: movedAt, fromColumnId: columnId, toColumnId: resolvedFallback },
       ];
+      const activities = [
+        ...((cardRow.activities as CardActivity[]) ?? []),
+        createActivity("moved", "Moved after column deletion"),
+      ];
       await supabase
         .from("cards")
-        .update({ column_id: resolvedFallback, column_entered_at: movedAt, moves: newMoves })
+        .update({ column_id: resolvedFallback, column_entered_at: movedAt, moves: newMoves, activities })
         .eq("id", cardRow.id);
     }
 
@@ -484,6 +557,100 @@ export const supabaseKanbanApi: KanbanApiService = {
       if ((sorted[i].order as number) !== i) {
         await supabase.from("columns").update({ order: i }).eq("id", sorted[i].id);
       }
+    }
+
+    return true;
+  },
+
+  async reorderColumns(orderedIds: string[]): Promise<boolean> {
+    for (let i = 0; i < orderedIds.length; i++) {
+      const { error } = await supabase.from("columns").update({ order: i }).eq("id", orderedIds[i]);
+      if (error) return false;
+    }
+    return true;
+  },
+
+  async applyBoardTemplate(templateId: BoardTemplateId): Promise<boolean> {
+    const template = getBoardTemplate(templateId);
+    if (!template) return false;
+    const userId = await getCurrentUserId();
+    const boardId = requireBoardId();
+
+    const { data: existingColumns, error: columnError } = await supabase
+      .from("columns")
+      .select("*")
+      .eq("board_id", boardId)
+      .order("order", { ascending: true });
+    if (columnError) throw columnError;
+
+    if (template.columns.length === 0) return false;
+
+    const previousColumnIds = (existingColumns ?? []).map((column) => column.id as string);
+    const { data: preExistingCards, error: preExistingCardsError } = previousColumnIds.length > 0
+      ? await supabase
+          .from("cards")
+          .select("id, column_id, moves, activities")
+          .in("column_id", previousColumnIds)
+      : { data: [], error: null };
+    if (preExistingCardsError) throw preExistingCardsError;
+
+    const templateColumnRows = template.columns.map((columnInput, index) => ({
+      user_id: userId,
+      board_id: boardId,
+      title: columnInput.title.trim(),
+      order: index,
+      wip_limit: columnInput.wipLimit ?? null,
+    }));
+
+    const { data: insertedColumns, error: insertColumnError } = await supabase
+      .from("columns")
+      .insert(templateColumnRows)
+      .select("*");
+    if (insertColumnError) throw insertColumnError;
+
+    const columns = (insertedColumns ?? [])
+      .map(rowToColumn)
+      .sort((left, right) => left.order - right.order);
+
+    const firstColumnId = columns[0]?.id;
+    if (!firstColumnId) return false;
+
+    if ((preExistingCards ?? []).length > 0) {
+      const movedAt = new Date().toISOString();
+      for (const cardRow of preExistingCards ?? []) {
+        const newMoves: CardMove[] = [
+          ...((cardRow.moves as CardMove[]) ?? []),
+          { at: movedAt, fromColumnId: cardRow.column_id as string, toColumnId: firstColumnId },
+        ];
+        const activities = [
+          ...((cardRow.activities as CardActivity[]) ?? []),
+          createActivity("moved", `Moved to ${template.columns[0].title} by template`),
+        ];
+        const { error } = await supabase
+          .from("cards")
+          .update({ column_id: firstColumnId, column_entered_at: movedAt, moves: newMoves, activities })
+          .eq("id", cardRow.id);
+        if (error) return false;
+      }
+    }
+
+    if (previousColumnIds.length > 0) {
+      const { error } = await supabase.from("columns").delete().in("id", previousColumnIds);
+      if (error) return false;
+    }
+
+    const columnsByTitle = new Map(columns.map((column) => [column.title.toLowerCase(), column.id]));
+    for (const card of template.cards) {
+      const columnId = columnsByTitle.get(card.columnTitle.toLowerCase()) ?? columns[0]?.id;
+      if (!columnId) return false;
+      await createSupabaseCard(
+        {
+          ...card,
+          columnId,
+          dueDate: getOffsetDate(card.dueOffsetDays),
+        },
+        "template"
+      );
     }
 
     return true;

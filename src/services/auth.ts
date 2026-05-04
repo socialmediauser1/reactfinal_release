@@ -26,6 +26,12 @@ export const authService = {
     if (error) throw error;
   },
 
+  /** Create a reviewer-friendly anonymous session. Throws on failure. */
+  async signInAnonymously(): Promise<void> {
+    const { error } = await supabase.auth.signInAnonymously();
+    if (error) throw error;
+  },
+
   /** Sign out the current user. Throws on failure. */
   async signOut(): Promise<void> {
     const { error } = await supabase.auth.signOut();

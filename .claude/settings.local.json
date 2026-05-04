@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(npm exec:*)",
+      "Bash(grep -E \"\\\\.\\(md|MD\\)$\")",
+      "Bash(grep -r \"import.*supabase\\\\|import.*firebase\" '/c/Users/malta/OneDrive/Рабочий стол/ai react/hw5/sdt210_assignment5/src' --include=*.tsx --include=*.ts)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

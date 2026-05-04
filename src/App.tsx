@@ -5,15 +5,21 @@ import Board from "./pages/Board";
 import Archive from "./pages/Archive";
 import Stats from "./pages/Stats";
 import Settings from "./pages/Settings";
-import About from "./pages/About";
 import Login from "./pages/Login";
 import { useAuthStore } from "./store/authStore";
 import { useBoardsStore } from "./store/boardsStore";
 import { useKanbanStore } from "./store/kanbanStore";
+import { useThemeStore } from "./store/themeStore";
 
 const USE_SUPABASE = !!import.meta.env.VITE_SUPABASE_URL;
 
 function App() {
+  const initializeTheme = useThemeStore((s) => s.initialize);
+
+  useEffect(() => {
+    initializeTheme();
+  }, [initializeTheme]);
+
   if (!USE_SUPABASE) {
     return <PlainApp />;
   }
@@ -28,7 +34,7 @@ function PlainApp() {
         <Route path="/archive" element={<Archive />} />
         <Route path="/stats" element={<Stats />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/about" element={<About />} />
+        <Route path="/about" element={<Navigate to="/settings" replace />} />
       </Route>
     </Routes>
   );
@@ -67,7 +73,7 @@ function AuthenticatedApp() {
           fontSize: "0.95rem",
         }}
       >
-        Loading…
+        Loading...
       </div>
     );
   }
@@ -83,7 +89,7 @@ function AuthenticatedApp() {
         <Route path="/archive" element={<Archive />} />
         <Route path="/stats" element={<Stats />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/about" element={<About />} />
+        <Route path="/about" element={<Navigate to="/settings" replace />} />
       </Route>
     </Routes>
   );

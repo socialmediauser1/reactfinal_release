@@ -15,6 +15,7 @@ interface AuthActions {
   initialize: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
+  continueAsGuest: () => Promise<void>;
   signOut: () => Promise<void>;
   updateDisplayName: (name: string) => Promise<void>;
 }
@@ -52,6 +53,19 @@ export const useAuthStore = create<AuthStore>((set) => ({
       set({ loading: false, error: null });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : "Sign up failed." });
+    }
+  },
+
+  continueAsGuest: async () => {
+    set({ loading: true, error: null });
+    try {
+      await authService.signInAnonymously();
+      set({ loading: false, error: null });
+    } catch (err) {
+      set({
+        loading: false,
+        error: err instanceof Error ? err.message : "Guest access failed.",
+      });
     }
   },
 

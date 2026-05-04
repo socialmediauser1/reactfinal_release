@@ -95,6 +95,10 @@ export default function Archive() {
               <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
                 <Chip label={entry.card.category} category={entry.card.category} />
                 {entry.card.priority && <Chip label={entry.card.priority} dim />}
+                {entry.card.dueDate && <Chip label={`due ${entry.card.dueDate}`} dim />}
+                {entry.card.tags.map((tag) => (
+                  <Chip key={tag} label={`#${tag}`} dim />
+                ))}
                 {entry.card.assignee && (
                   <Chip label={`👤 ${entry.card.assignee}`} dim />
                 )}
@@ -122,7 +126,7 @@ export default function Archive() {
                     alignSelf: "flex-start",
                   }}
                 >
-                  {loading ? "Restoring…" : "Restore to Board"}
+                  {loading ? "Restoring..." : "Restore to Board"}
                 </button>
               )}
             </li>

@@ -10,12 +10,24 @@ import {
   type UpdateColumnRequest,
 } from "../services/api";
 import { supabaseKanbanApi } from "../services/supabaseApi";
-import type { ArchivedCardEntry, Card, Column, FilterState, SwimlaneGroupBy } from "../types";
+import { validateCreateCardInput, validateUpdateCardInput } from "../lib/kanbanUtils";
+import type {
+  ArchivedCardEntry,
+  BoardTemplateId,
+  Card,
+  Column,
+  FilterState,
+  SwimlaneGroupBy,
+} from "../types";
 
 const USE_SUPABASE = !!import.meta.env.VITE_SUPABASE_URL;
 const kanbanApi = USE_SUPABASE ? supabaseKanbanApi : mockApi;
+const VIEW_PREFERENCES_KEY = "personal-kanban:view-preferences";
+const CUSTOM_CATEGORIES_KEY = "personal-kanban:custom-categories";
+const BUILT_IN_CATEGORIES = ["bug", "feature", "docs"];
 
 export type CreateCardInput = CreateCardRequest;
+export { BUILT_IN_CATEGORIES };
 
 export interface KanbanState {
   columns: Column[];
@@ -25,6 +37,7 @@ export interface KanbanState {
   filter: FilterState;
   loading: boolean;
   error: string | null;
+  customCategories: string[];
 }
 
 interface KanbanActions {
@@ -40,29 +53,51 @@ interface KanbanActions {
   addColumn: (input: CreateColumnRequest) => Promise<void>;
   editColumn: (columnId: string, payload: UpdateColumnRequest) => Promise<void>;
   removeColumn: (columnId: string, fallbackColumnId?: string) => Promise<void>;
+  reorderColumns: (orderedIds: string[]) => Promise<void>;
+  applyTemplate: (templateId: BoardTemplateId) => Promise<void>;
+  exportBoard: (format: "json" | "csv") => string;
   resetState: () => void;
+  addCustomCategory: (name: string) => void;
+  removeCustomCategory: (name: string) => void;
 }
 
 export type KanbanStore = KanbanState & KanbanActions;
 
-function toStoreState(snapshot: BoardSnapshot): Omit<KanbanState, "loading" | "error"> {
-  return {
+function readCustomCategories(): string[] {
+  if (typeof window === "undefined") return [];
+  try { return JSON.parse(window.localStorage.getItem(CUSTOM_CATEGORIES_KEY) ?? "[]") as string[]; }
+  catch { return []; }
+}
+
+function persistCustomCategories(cats: string[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CUSTOM_CATEGORIES_KEY, JSON.stringify(cats));
+}
+
+function toStoreState(snapshot: BoardSnapshot): Omit<KanbanState, "loading" | "error" | "customCategories"> {
+  return mergeViewPreferences({
     columns: snapshot.columns,
     cards: snapshot.cards,
     archivedEntries: snapshot.archivedEntries,
     swimlaneGroupBy: snapshot.swimlaneGroupBy,
     filter: snapshot.filter,
-  };
+  });
 }
 
 function buildInitialState(): KanbanState {
   const snapshot = USE_SUPABASE
-    ? { columns: [], cards: [], archivedEntries: [], swimlaneGroupBy: null, filter: { category: null, swimlaneValue: null, searchQuery: "" } }
+    ? createEmptyBoardSnapshot()
     : createEmptyBoardSnapshot();
+  if (USE_SUPABASE) {
+    snapshot.columns = [];
+    snapshot.cards = [];
+    snapshot.archivedEntries = [];
+  }
   return {
     ...toStoreState(snapshot),
     loading: USE_SUPABASE,
     error: null,
+    customCategories: readCustomCategories(),
   };
 }
 
@@ -74,7 +109,120 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export const useKanbanStore = create<KanbanStore>((set) => {
+function readViewPreferences(): Pick<KanbanState, "filter" | "swimlaneGroupBy"> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(VIEW_PREFERENCES_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as Pick<KanbanState, "filter" | "swimlaneGroupBy">;
+  } catch {
+    return null;
+  }
+}
+
+function persistViewPreferences(filter: FilterState, swimlaneGroupBy: SwimlaneGroupBy | null): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    VIEW_PREFERENCES_KEY,
+    JSON.stringify({ filter, swimlaneGroupBy })
+  );
+}
+
+function clearViewPreferences(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(VIEW_PREFERENCES_KEY);
+}
+
+function mergeViewPreferences(
+  state: Omit<KanbanState, "loading" | "error" | "customCategories">
+): Omit<KanbanState, "loading" | "error" | "customCategories"> {
+  const preferences = readViewPreferences();
+  if (!preferences) return state;
+  return {
+    ...state,
+    filter: {
+      ...state.filter,
+      ...preferences.filter,
+    },
+    swimlaneGroupBy: preferences.swimlaneGroupBy,
+  };
+}
+
+function escapeCsv(value: unknown): string {
+  const text = String(value ?? "");
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function buildCsvExport(state: KanbanStore): string {
+  const columnsById = new Map(state.columns.map((column) => [column.id, column.title]));
+  const rows = [
+    [
+      "status",
+      "id",
+      "title",
+      "description",
+      "column",
+      "category",
+      "priority",
+      "assignee",
+      "dueDate",
+      "tags",
+      "createdAt",
+      "archivedAt",
+      "moveCount",
+    ],
+    ...state.cards.map((card) => [
+      "active",
+      card.id,
+      card.title,
+      card.description,
+      columnsById.get(card.columnId) ?? card.columnId,
+      card.category,
+      card.priority ?? "",
+      card.assignee ?? "",
+      card.dueDate ?? "",
+      card.tags.join(";"),
+      card.createdAt,
+      "",
+      card.moves.length,
+    ]),
+    ...state.archivedEntries.map((entry) => [
+      "archived",
+      entry.card.id,
+      entry.card.title,
+      entry.card.description,
+      columnsById.get(entry.card.columnId) ?? entry.card.columnId,
+      entry.card.category,
+      entry.card.priority ?? "",
+      entry.card.assignee ?? "",
+      entry.card.dueDate ?? "",
+      entry.card.tags.join(";"),
+      entry.card.createdAt,
+      entry.archivedAt,
+      entry.card.moves.length,
+    ]),
+  ];
+
+  return rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+}
+
+function buildJsonExport(state: KanbanStore): string {
+  return JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      columns: state.columns,
+      cards: state.cards,
+      archivedEntries: state.archivedEntries,
+    },
+    null,
+    2
+  );
+}
+
+export const useKanbanStore = create<KanbanStore>((set, get) => {
   const syncBoard = async () => {
     const snapshot = await kanbanApi.getBoardSnapshot();
     set({
@@ -122,18 +270,16 @@ export const useKanbanStore = create<KanbanStore>((set) => {
       }
     },
     addCard: async (input) => {
-      const title = input.title.trim();
+      const validation = validateCreateCardInput(input);
 
-      if (!title) {
-        set({ error: "Card title cannot be empty." });
+      if (!validation.value) {
+        set({ error: validation.error ?? "Invalid card." });
         return;
       }
+      const validatedInput = validation.value;
 
       await runMutation(async () => {
-        await kanbanApi.createCard({
-          ...input,
-          title,
-        });
+        await kanbanApi.createCard(validatedInput);
 
         return true;
       }, "Failed to create card.");
@@ -163,20 +309,28 @@ export const useKanbanStore = create<KanbanStore>((set) => {
       }, "Failed to restore archived card.");
     },
     editCard: async (cardId, payload) => {
+      const validation = validateUpdateCardInput(payload);
+      if (!validation.value) {
+        set({ error: validation.error ?? "Invalid card." });
+        return;
+      }
+      const validatedPayload = validation.value;
       await runMutation(async () => {
-        const result = await kanbanApi.updateCard(cardId, payload);
+        const result = await kanbanApi.updateCard(cardId, validatedPayload);
         return result !== null;
       }, "Failed to update card.");
     },
     setFilter: async (payload) => {
       await runMutation(async () => {
-        await kanbanApi.updateFilter(payload);
+        const filter = await kanbanApi.updateFilter(payload);
+        persistViewPreferences(filter, get().swimlaneGroupBy);
         return true;
       }, "Failed to update filter.");
     },
     setSwimlaneGroupBy: async (groupBy) => {
       await runMutation(async () => {
         await kanbanApi.updateSwimlaneGroupBy(groupBy);
+        persistViewPreferences(get().filter, groupBy);
         return true;
       }, "Failed to update swimlane grouping.");
     },
@@ -202,11 +356,40 @@ export const useKanbanStore = create<KanbanStore>((set) => {
         return kanbanApi.deleteColumn(columnId, fallbackColumnId);
       }, "Failed to delete column.");
     },
+    reorderColumns: async (orderedIds) => {
+      await runMutation(async () => {
+        return kanbanApi.reorderColumns(orderedIds);
+      }, "Failed to reorder columns.");
+    },
+    applyTemplate: async (templateId) => {
+      await runMutation(async () => {
+        return kanbanApi.applyBoardTemplate(templateId);
+      }, "Failed to apply board template.");
+    },
+    exportBoard: (format): string => {
+      const state = get();
+      return format === "json" ? buildJsonExport(state) : buildCsvExport(state);
+    },
     resetState: () => {
       if (!USE_SUPABASE) {
         resetKanbanApiMock();
       }
+      clearViewPreferences();
       set(buildInitialState());
+    },
+    addCustomCategory: (name) => {
+      const normalized = name.trim().toLowerCase();
+      if (!normalized || BUILT_IN_CATEGORIES.includes(normalized)) return;
+      const current = get().customCategories;
+      if (current.includes(normalized)) return;
+      const updated = [...current, normalized];
+      persistCustomCategories(updated);
+      set({ customCategories: updated });
+    },
+    removeCustomCategory: (name) => {
+      const updated = get().customCategories.filter((c) => c !== name);
+      persistCustomCategories(updated);
+      set({ customCategories: updated });
     },
   };
 });

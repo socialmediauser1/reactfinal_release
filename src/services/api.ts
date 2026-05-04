@@ -1,12 +1,16 @@
 import type {
   ArchivedCardEntry,
+  BoardTemplateId,
   Card,
+  CardActivity,
+  CardActivityType,
   CardCategory,
   CardPriority,
   Column,
   FilterState,
   SwimlaneGroupBy,
 } from "../types";
+import { normalizeDueDate, normalizeTags } from "../lib/kanbanUtils";
 
 export interface CreateCardRequest {
   title: string;
@@ -15,6 +19,8 @@ export interface CreateCardRequest {
   columnId?: string;
   assignee?: string;
   priority?: CardPriority;
+  dueDate?: string;
+  tags?: string[];
 }
 
 export interface UpdateCardRequest {
@@ -23,6 +29,8 @@ export interface UpdateCardRequest {
   category?: CardCategory;
   assignee?: string;
   priority?: CardPriority;
+  dueDate?: string | null;
+  tags?: string[];
 }
 
 export interface CreateColumnRequest {
@@ -44,6 +52,24 @@ export interface BoardSnapshot {
   filter: FilterState;
 }
 
+export interface BoardTemplateCard {
+  title: string;
+  description?: string;
+  category?: CardCategory;
+  columnTitle: string;
+  priority?: CardPriority;
+  tags?: string[];
+  dueOffsetDays?: number;
+}
+
+export interface BoardTemplate {
+  id: BoardTemplateId;
+  name: string;
+  description: string;
+  columns: CreateColumnRequest[];
+  cards: BoardTemplateCard[];
+}
+
 export interface KanbanApiService {
   getBoardSnapshot: () => Promise<BoardSnapshot>;
   createCard: (payload: CreateCardRequest) => Promise<Card>;
@@ -55,6 +81,8 @@ export interface KanbanApiService {
   createColumn: (payload: CreateColumnRequest) => Promise<Column>;
   updateColumn: (columnId: string, payload: UpdateColumnRequest) => Promise<Column | null>;
   deleteColumn: (columnId: string, fallbackColumnId?: string) => Promise<boolean>;
+  reorderColumns: (orderedIds: string[]) => Promise<boolean>;
+  applyBoardTemplate: (templateId: BoardTemplateId) => Promise<boolean>;
   updateFilter: (payload: Partial<FilterState>) => Promise<FilterState>;
   updateSwimlaneGroupBy: (groupBy: SwimlaneGroupBy | null) => Promise<SwimlaneGroupBy | null>;
 }
@@ -63,6 +91,9 @@ const DEFAULT_FILTER: FilterState = {
   category: null,
   swimlaneValue: null,
   searchQuery: "",
+  tag: null,
+  dueStatus: "all",
+  sortMode: "created",
 };
 
 const DEFAULT_COLUMNS: Column[] = [
@@ -70,6 +101,78 @@ const DEFAULT_COLUMNS: Column[] = [
   { id: "column-in-progress", title: "In Progress", order: 1, wipLimit: 2 },
   { id: "column-done", title: "Done", order: 2 },
 ];
+
+export const BOARD_TEMPLATES: BoardTemplate[] = [
+  {
+    id: "personal",
+    name: "Personal Tasks",
+    description: "Daily planning, errands, and habits.",
+    columns: [
+      { title: "Backlog", wipLimit: 8 },
+      { title: "This Week", wipLimit: 5 },
+      { title: "Today", wipLimit: 3 },
+      { title: "Done" },
+    ],
+    cards: [
+      { title: "Plan the week", columnTitle: "This Week", category: "feature", priority: "medium", tags: ["planning"], dueOffsetDays: 1 },
+      { title: "Clear inbox", columnTitle: "Today", category: "docs", priority: "low", tags: ["admin"], dueOffsetDays: 0 },
+      { title: "Review priorities", columnTitle: "Backlog", category: "feature", priority: "medium", tags: ["focus"] },
+    ],
+  },
+  {
+    id: "sprint",
+    name: "Software Sprint",
+    description: "Sprint flow for implementation, review, and release work.",
+    columns: [
+      { title: "Backlog", wipLimit: 10 },
+      { title: "Ready", wipLimit: 5 },
+      { title: "In Progress", wipLimit: 3 },
+      { title: "Review", wipLimit: 3 },
+      { title: "Done" },
+    ],
+    cards: [
+      { title: "Define acceptance criteria", columnTitle: "Ready", category: "docs", priority: "medium", tags: ["planning"], dueOffsetDays: 1 },
+      { title: "Implement feature slice", columnTitle: "Backlog", category: "feature", priority: "high", tags: ["frontend"] },
+      { title: "Fix reported bug", columnTitle: "Backlog", category: "bug", priority: "high", tags: ["bugfix"] },
+    ],
+  },
+  {
+    id: "school",
+    name: "School Assignment Tracker",
+    description: "Track coursework from research through submission.",
+    columns: [
+      { title: "Assigned", wipLimit: 8 },
+      { title: "Research", wipLimit: 4 },
+      { title: "Drafting", wipLimit: 3 },
+      { title: "Submitted" },
+    ],
+    cards: [
+      { title: "Read assignment brief", columnTitle: "Assigned", category: "docs", priority: "high", tags: ["coursework"], dueOffsetDays: 0 },
+      { title: "Collect references", columnTitle: "Research", category: "docs", priority: "medium", tags: ["research"], dueOffsetDays: 3 },
+      { title: "Prepare final submission", columnTitle: "Drafting", category: "feature", priority: "high", tags: ["final"], dueOffsetDays: 7 },
+    ],
+  },
+  {
+    id: "jobs",
+    name: "Job Applications",
+    description: "Manage applications, interviews, and follow-ups.",
+    columns: [
+      { title: "Leads", wipLimit: 12 },
+      { title: "Applied", wipLimit: 8 },
+      { title: "Interviewing", wipLimit: 4 },
+      { title: "Closed" },
+    ],
+    cards: [
+      { title: "Update resume", columnTitle: "Leads", category: "docs", priority: "high", tags: ["resume"], dueOffsetDays: 1 },
+      { title: "Apply to target company", columnTitle: "Applied", category: "feature", priority: "medium", tags: ["application"], dueOffsetDays: 2 },
+      { title: "Send follow-up email", columnTitle: "Interviewing", category: "docs", priority: "medium", tags: ["follow-up"], dueOffsetDays: 4 },
+    ],
+  },
+];
+
+export function getBoardTemplate(templateId: BoardTemplateId): BoardTemplate | undefined {
+  return BOARD_TEMPLATES.find((template) => template.id === templateId);
+}
 
 export function createEmptyBoardSnapshot(): BoardSnapshot {
   return {
@@ -87,10 +190,33 @@ export function resetKanbanApiMock(): void {
   mockDb = createEmptyBoardSnapshot();
 }
 
+function getOffsetDate(offsetDays: number | undefined): string | undefined {
+  if (offsetDays === undefined) return undefined;
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function createActivity(type: CardActivityType, message: string): CardActivity {
+  return {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    type,
+    message,
+  };
+}
+
+function appendActivity(card: Card, type: CardActivityType, message: string): void {
+  card.activities = [...(card.activities ?? []), createActivity(type, message)];
+}
+
 function cloneCard(card: Card): Card {
   return {
     ...card,
-    moves: card.moves.map((move) => ({ ...move })),
+    dueDate: card.dueDate,
+    tags: [...(card.tags ?? [])],
+    moves: (card.moves ?? []).map((move) => ({ ...move })),
+    activities: (card.activities ?? []).map((activity) => ({ ...activity })),
   };
 }
 
@@ -107,7 +233,10 @@ function cloneSnapshot(snapshot: BoardSnapshot): BoardSnapshot {
     cards: snapshot.cards.map(cloneCard),
     archivedEntries: snapshot.archivedEntries.map(cloneArchivedEntry),
     swimlaneGroupBy: snapshot.swimlaneGroupBy,
-    filter: { ...snapshot.filter },
+    filter: {
+      ...DEFAULT_FILTER,
+      ...snapshot.filter,
+    },
   };
 }
 
@@ -120,30 +249,37 @@ function normalizeColumns(columns: Column[]): Column[] {
     }));
 }
 
+async function createMockCard(payload: CreateCardRequest, activityType: CardActivityType = "created"): Promise<Card> {
+  const createdAt = new Date().toISOString();
+  const resolvedColumnId = payload.columnId ?? mockDb.columns[0]?.id ?? "column-todo";
+  const card: Card = {
+    id: crypto.randomUUID(),
+    title: payload.title.trim(),
+    description: payload.description ?? "",
+    category: payload.category ?? "feature",
+    columnId: resolvedColumnId,
+    assignee: payload.assignee?.trim() || undefined,
+    priority: payload.priority ?? "medium",
+    dueDate: normalizeDueDate(payload.dueDate),
+    tags: normalizeTags(payload.tags),
+    createdAt,
+    columnEnteredAt: createdAt,
+    moves: [],
+    activities: [createActivity(activityType, activityType === "template" ? "Created from template" : "Created card")],
+  };
+
+  mockDb.cards.push(card);
+
+  return cloneCard(card);
+}
+
 export const kanbanApi: KanbanApiService = {
   async getBoardSnapshot() {
     return cloneSnapshot(mockDb);
   },
 
   async createCard(payload) {
-    const createdAt = new Date().toISOString();
-    const resolvedColumnId = payload.columnId ?? mockDb.columns[0]?.id ?? "column-todo";
-    const card: Card = {
-      id: crypto.randomUUID(),
-      title: payload.title.trim(),
-      description: payload.description ?? "",
-      category: payload.category ?? "feature",
-      columnId: resolvedColumnId,
-      assignee: payload.assignee?.trim() || undefined,
-      priority: payload.priority ?? "medium",
-      createdAt,
-      columnEnteredAt: createdAt,
-      moves: [],
-    };
-
-    mockDb.cards.push(card);
-
-    return cloneCard(card);
+    return createMockCard(payload);
   },
 
   async updateCard(cardId, payload) {
@@ -177,13 +313,23 @@ export const kanbanApi: KanbanApiService = {
       card.priority = payload.priority;
     }
 
+    if (Object.prototype.hasOwnProperty.call(payload, "dueDate")) {
+      card.dueDate = normalizeDueDate(payload.dueDate);
+    }
+
+    if (payload.tags !== undefined) {
+      card.tags = normalizeTags(payload.tags);
+    }
+
+    appendActivity(card, "edited", "Updated card");
+
     return cloneCard(card);
   },
 
   async moveCard(cardId, targetColumnId) {
-    const targetExists = mockDb.columns.some((column) => column.id === targetColumnId);
+    const targetColumn = mockDb.columns.find((column) => column.id === targetColumnId);
 
-    if (!targetExists) {
+    if (!targetColumn) {
       return null;
     }
 
@@ -202,6 +348,7 @@ export const kanbanApi: KanbanApiService = {
     });
     card.columnId = targetColumnId;
     card.columnEnteredAt = movedAt;
+    appendActivity(card, "moved", `Moved to ${targetColumn.title}`);
 
     return cloneCard(card);
   },
@@ -220,6 +367,7 @@ export const kanbanApi: KanbanApiService = {
       return null;
     }
 
+    appendActivity(card, "archived", "Archived card");
     mockDb.cards = mockDb.cards.filter((entry) => entry.id !== cardId);
 
     const archivedEntry: ArchivedCardEntry = {
@@ -252,11 +400,11 @@ export const kanbanApi: KanbanApiService = {
     const card: Card =
       archivedEntry.card.columnId === resolvedTargetColumnId
         ? {
-            ...archivedEntry.card,
+            ...cloneCard(archivedEntry.card),
             columnEnteredAt: restoredAt,
           }
         : {
-            ...archivedEntry.card,
+            ...cloneCard(archivedEntry.card),
             columnId: resolvedTargetColumnId,
             columnEnteredAt: restoredAt,
             moves: [
@@ -269,6 +417,7 @@ export const kanbanApi: KanbanApiService = {
             ],
           };
 
+    appendActivity(card, "restored", "Restored card");
     mockDb.cards.push(card);
     mockDb.archivedEntries = mockDb.archivedEntries.filter((entry) => entry.card.id !== cardId);
 
@@ -322,7 +471,7 @@ export const kanbanApi: KanbanApiService = {
   },
 
   async deleteColumn(columnId, fallbackColumnId) {
-    if (mockDb.columns.length <= 3) {
+    if (mockDb.columns.length <= 2) {
       return false;
     }
 
@@ -350,7 +499,7 @@ export const kanbanApi: KanbanApiService = {
         return card;
       }
 
-      return {
+      const movedCard = {
         ...card,
         columnId: resolvedFallbackColumnId,
         columnEnteredAt: movedAt,
@@ -363,13 +512,84 @@ export const kanbanApi: KanbanApiService = {
           },
         ],
       };
+      appendActivity(movedCard, "moved", "Moved after column deletion");
+      return movedCard;
     });
+
+    return true;
+  },
+
+  async reorderColumns(orderedIds) {
+    orderedIds.forEach((id, i) => {
+      const col = mockDb.columns.find((c) => c.id === id);
+      if (col) col.order = i;
+    });
+    return true;
+  },
+
+  async applyBoardTemplate(templateId) {
+    const template = getBoardTemplate(templateId);
+    if (!template) {
+      return false;
+    }
+
+    const preExistingCardIds = new Set(mockDb.cards.map((c) => c.id));
+    const templateColumns = normalizeColumns(
+      template.columns.map((columnInput, index) => ({
+        id: crypto.randomUUID(),
+        title: columnInput.title.trim(),
+        order: index,
+        ...(columnInput.wipLimit !== undefined ? { wipLimit: columnInput.wipLimit } : {}),
+      }))
+    );
+
+    const firstColumnId = templateColumns[0]?.id;
+    if (!firstColumnId) {
+      return false;
+    }
+
+    mockDb.columns = templateColumns;
+
+    if (firstColumnId && preExistingCardIds.size > 0) {
+      const movedAt = new Date().toISOString();
+      mockDb.cards = mockDb.cards.map((card) => {
+        if (!preExistingCardIds.has(card.id)) return card;
+        const movedCard = {
+          ...card,
+          columnId: firstColumnId,
+          columnEnteredAt: movedAt,
+          moves: [...card.moves, { at: movedAt, fromColumnId: card.columnId, toColumnId: firstColumnId }],
+        };
+        appendActivity(movedCard, "moved", `Moved to ${template.columns[0].title} by template`);
+        return movedCard;
+      });
+    }
+
+    const columnsByTitle = new Map(
+      templateColumns.map((column) => [column.title.toLowerCase(), column.id])
+    );
+
+    for (const card of template.cards) {
+      const columnId = columnsByTitle.get(card.columnTitle.toLowerCase()) ?? mockDb.columns[0]?.id;
+      if (!columnId) {
+        return false;
+      }
+      await createMockCard(
+        {
+          ...card,
+          columnId,
+          dueDate: getOffsetDate(card.dueOffsetDays),
+        },
+        "template"
+      );
+    }
 
     return true;
   },
 
   async updateFilter(payload) {
     mockDb.filter = {
+      ...DEFAULT_FILTER,
       ...mockDb.filter,
       ...payload,
     };

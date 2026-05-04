@@ -72,7 +72,7 @@ export default function About() {
 
         <InfoCard title="Version">
           <p style={{ margin: 0, fontSize: "0.875rem", color: "#6b7280" }}>
-            <strong style={{ color: "#111827" }}>1.0.0</strong> — SDT210 Assignment 5
+            <strong style={{ color: "#111827" }}>1.0.0</strong> - SDT210 Assignment 5
           </p>
         </InfoCard>
 

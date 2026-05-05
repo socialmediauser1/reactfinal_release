@@ -41,8 +41,9 @@ A React Kanban app for tracking task flow across configurable columns, prioritie
 1. Create a Supabase project.
 2. Run the SQL blocks documented in `src/services/boardsApi.ts`.
 3. Enable anonymous sign-in in Supabase Auth settings for reviewer guest access.
-4. Configure password reset redirects in Supabase Auth settings for the deployed URL.
-5. Set these environment variables locally and in Vercel:
+4. Disable sign-up email confirmation in Supabase Auth email provider settings.
+5. Configure password reset redirects in Supabase Auth settings for the deployed URL.
+6. Set these environment variables locally and in Vercel:
 
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
@@ -51,6 +52,8 @@ VITE_APP_URL=https://reactfinal-release.vercel.app
 ```
 
 Without those variables, the app runs in in-memory demo mode for local development.
+
+For account registration, turn off **Confirm email** in the Supabase Email provider settings. Keep password recovery enabled.
 
 For password reset links, set the Supabase Auth **Site URL** to `https://reactfinal-release.vercel.app` and allow redirects for `https://reactfinal-release.vercel.app/**`. If Supabase is still configured with `http://localhost:3000`, recovery emails will open localhost and fail unless a local server is running there.
 

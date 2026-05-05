@@ -225,7 +225,7 @@ export default function Login() {
               <Notice
                 tone="success"
                 title="Account created"
-                message="Check your email to confirm the account, then sign in."
+                message="Your account is ready. You can sign in now."
               />
             ) : resetSent && mode === "reset" ? (
               <Notice

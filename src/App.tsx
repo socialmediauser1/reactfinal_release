@@ -46,6 +46,8 @@ function AuthenticatedApp() {
   const initializeAuth = useAuthStore((s) => s.initialize);
   const initializeBoards = useBoardsStore((s) => s.initialize);
   const initializeKanban = useKanbanStore((s) => s.initialize);
+  const location = useLocation();
+  const isRecoveryLink = location.hash.includes("type=recovery");
 
   useEffect(() => {
     void initializeAuth();
@@ -78,6 +80,19 @@ function AuthenticatedApp() {
     );
   }
 
+  if (isRecoveryLink && location.pathname !== "/login") {
+    return (
+      <Navigate
+        to={{
+          pathname: "/login",
+          search: "?mode=update-password",
+          hash: location.hash,
+        }}
+        replace
+      />
+    );
+  }
+
   return (
     <Routes>
       <Route
@@ -98,8 +113,9 @@ function AuthenticatedApp() {
 function LoginGate({ user }: { user: unknown }) {
   const location = useLocation();
   const isPasswordUpdate = new URLSearchParams(location.search).get("mode") === "update-password";
+  const isRecoveryLink = location.hash.includes("type=recovery");
 
-  if (user && !isPasswordUpdate) {
+  if (user && !isPasswordUpdate && !isRecoveryLink) {
     return <Navigate to="/" replace />;
   }
 

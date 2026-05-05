@@ -7,6 +7,9 @@
 import { supabase } from "../lib/supabase";
 import type { User } from "@supabase/supabase-js";
 
+const APP_URL = ((import.meta.env.VITE_APP_URL as string | undefined) || "https://reactfinal-release.vercel.app")
+  .replace(/\/$/, "");
+
 export const authService = {
   /** Returns the current user from the active session, or null. */
   async getSession(): Promise<User | null> {
@@ -28,11 +31,8 @@ export const authService = {
 
   /** Send a password reset email. Throws on failure. */
   async requestPasswordReset(email: string): Promise<void> {
-    const redirectTo = typeof window !== "undefined"
-      ? `${window.location.origin}/login?mode=update-password`
-      : undefined;
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      ...(redirectTo ? { redirectTo } : {}),
+      redirectTo: `${APP_URL}/login?mode=update-password`,
     });
     if (error) throw error;
   },

@@ -47,9 +47,12 @@ A React Kanban app for tracking task flow across configurable columns, prioritie
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
+VITE_APP_URL=https://reactfinal-release.vercel.app
 ```
 
 Without those variables, the app runs in in-memory demo mode for local development.
+
+For password reset links, set the Supabase Auth **Site URL** to `https://reactfinal-release.vercel.app` and allow redirects for `https://reactfinal-release.vercel.app/**`. If Supabase is still configured with `http://localhost:3000`, recovery emails will open localhost and fail unless a local server is running there.
 
 ## Local Development
 

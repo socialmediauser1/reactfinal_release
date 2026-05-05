@@ -103,6 +103,11 @@ export default function Board() {
   const isTeamBoard     = activeBoard?.type === "team";
   const members         = boardMembers;
   const dark            = theme === "dark";
+  const boardTitle      = activeBoard
+    ? activeBoard.type === "personal"
+      ? "Personal"
+      : activeBoard.name
+    : "Board";
 
   const [createModalColumnId, setCreateModalColumnId] = useState<string | null>(null);
   const [editingCard, setEditingCard]                 = useState<Card | null>(null);
@@ -219,7 +224,7 @@ export default function Board() {
       >
         <div>
           <h1 style={{ margin: 0, fontSize: "1.4rem", fontWeight: 700, color: dark ? "#f8fafc" : "#111827", letterSpacing: 0 }}>
-            {activeBoard ? activeBoard.name : "Board"}
+            {boardTitle}
             <span style={{ marginLeft: "0.5rem", fontSize: "0.9rem", fontWeight: 400, color: dark ? "#94a3b8" : "#9ca3af" }}>
               {cards.length} card{cards.length !== 1 ? "s" : ""}
             </span>

@@ -174,7 +174,7 @@ export const supabaseBoardsApi = {
 
     const { data, error } = await supabase
       .from("boards")
-      .insert({ owner_id: userId, name: "Personal Board", type: "personal" })
+      .insert({ owner_id: userId, name: "Personal", type: "personal" })
       .select("id")
       .single();
     if (error) {

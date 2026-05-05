@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import Layout from "./components/Layout";
 import Board from "./pages/Board";
 import Archive from "./pages/Archive";
@@ -82,7 +82,7 @@ function AuthenticatedApp() {
     <Routes>
       <Route
         path="/login"
-        element={user ? <Navigate to="/" replace /> : <Login />}
+        element={<LoginGate user={user} />}
       />
       <Route element={user ? <Layout /> : <Navigate to="/login" replace />}>
         <Route path="/" element={<Board />} />
@@ -93,6 +93,17 @@ function AuthenticatedApp() {
       </Route>
     </Routes>
   );
+}
+
+function LoginGate({ user }: { user: unknown }) {
+  const location = useLocation();
+  const isPasswordUpdate = new URLSearchParams(location.search).get("mode") === "update-password";
+
+  if (user && !isPasswordUpdate) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <Login />;
 }
 
 export default App;

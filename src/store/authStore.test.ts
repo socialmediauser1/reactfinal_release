@@ -8,6 +8,8 @@ vi.mock("../services/auth", () => ({
     getSession: vi.fn(),
     signIn: vi.fn(),
     signUp: vi.fn(),
+    requestPasswordReset: vi.fn(),
+    updatePassword: vi.fn(),
     signInAnonymously: vi.fn(),
     signOut: vi.fn(),
     updateDisplayName: vi.fn(),
@@ -60,5 +62,26 @@ describe("authStore", () => {
     expect(useAuthStore.getState().user).toBe(user);
     expect(useAuthStore.getState().initialized).toBe(true);
     expect(mockAuth.onAuthStateChange).toHaveBeenCalledOnce();
+  });
+
+  it("requests a password reset email", async () => {
+    mockAuth.requestPasswordReset.mockResolvedValue(undefined);
+
+    await useAuthStore.getState().requestPasswordReset("demo@example.com");
+
+    expect(mockAuth.requestPasswordReset).toHaveBeenCalledWith("demo@example.com");
+    expect(useAuthStore.getState().loading).toBe(false);
+    expect(useAuthStore.getState().error).toBeNull();
+  });
+
+  it("updates the current user's password", async () => {
+    const user = { id: "user-1", email: "demo@example.com" } as User;
+    mockAuth.updatePassword.mockResolvedValue(user);
+
+    await useAuthStore.getState().updatePassword("new-secret");
+
+    expect(mockAuth.updatePassword).toHaveBeenCalledWith("new-secret");
+    expect(useAuthStore.getState().user).toBe(user);
+    expect(useAuthStore.getState().loading).toBe(false);
   });
 });

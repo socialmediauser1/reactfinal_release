@@ -1,26 +1,53 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
 
+type LoginMode = "signin" | "signup" | "reset" | "updatePassword";
+
 export default function Login() {
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<LoginMode>(
+    searchParams.get("mode") === "update-password" ? "updatePassword" : "signin"
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [signupDone, setSignupDone] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [passwordUpdated, setPasswordUpdated] = useState(false);
 
   const loading = useAuthStore((s) => s.loading);
   const error = useAuthStore((s) => s.error);
   const signIn = useAuthStore((s) => s.signIn);
   const signUp = useAuthStore((s) => s.signUp);
+  const requestPasswordReset = useAuthStore((s) => s.requestPasswordReset);
+  const updatePassword = useAuthStore((s) => s.updatePassword);
   const continueAsGuest = useAuthStore((s) => s.continueAsGuest);
+
+  useEffect(() => {
+    if (searchParams.get("mode") === "update-password") {
+      setMode("updatePassword");
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (mode === "signin") {
       await signIn(email, password);
-    } else {
+    } else if (mode === "signup") {
       await signUp(email, password);
       if (!useAuthStore.getState().error) {
         setSignupDone(true);
+      }
+    } else if (mode === "reset") {
+      await requestPasswordReset(email);
+      if (!useAuthStore.getState().error) {
+        setResetSent(true);
+      }
+    } else {
+      await updatePassword(password);
+      if (!useAuthStore.getState().error) {
+        setPasswordUpdated(true);
       }
     }
   };
@@ -135,50 +162,64 @@ export default function Login() {
                   letterSpacing: 0,
                 }}
               >
-                {mode === "signin" ? "Sign in" : "Create account"}
+                {mode === "signin"
+                  ? "Sign in"
+                  : mode === "signup"
+                    ? "Create account"
+                    : mode === "reset"
+                      ? "Reset password"
+                      : "Set new password"}
               </h2>
               <p style={{ margin: 0, color: "#64748b", fontSize: "0.9rem" }}>
                 {mode === "signin"
                   ? "Use your account or open a guest board for review."
-                  : "Create an account to keep your own board history."}
+                  : mode === "signup"
+                    ? "Create an account to keep your own board history."
+                    : mode === "reset"
+                      ? "Enter your account email and we will send a password reset link."
+                      : "Choose a new password for your account."}
               </p>
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "0.35rem",
-                padding: "0.3rem",
-                backgroundColor: "#f1f5f9",
-                borderRadius: "10px",
-                marginBottom: "1rem",
-              }}
-            >
-              {(["signin", "signup"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => {
-                    setMode(m);
-                    setSignupDone(false);
-                  }}
-                  style={{
-                    padding: "0.55rem",
-                    fontSize: "0.875rem",
-                    fontWeight: 700,
-                    backgroundColor: mode === m ? "#fff" : "transparent",
-                    color: mode === m ? "#111827" : "#64748b",
-                    border: "none",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    boxShadow: mode === m ? "0 1px 4px rgba(15,23,42,0.10)" : "none",
-                  }}
-                >
-                  {m === "signin" ? "Sign In" : "Sign Up"}
-                </button>
-              ))}
-            </div>
+            {mode !== "updatePassword" && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "0.35rem",
+                  padding: "0.3rem",
+                  backgroundColor: "#f1f5f9",
+                  borderRadius: "10px",
+                  marginBottom: "1rem",
+                }}
+              >
+                {(["signin", "signup"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => {
+                      setMode(m);
+                      setSignupDone(false);
+                      setResetSent(false);
+                      setPasswordUpdated(false);
+                    }}
+                    style={{
+                      padding: "0.55rem",
+                      fontSize: "0.875rem",
+                      fontWeight: 700,
+                      backgroundColor: mode === m ? "#fff" : "transparent",
+                      color: mode === m ? "#111827" : "#64748b",
+                      border: "none",
+                      borderRadius: "8px",
+                      cursor: "pointer",
+                      boxShadow: mode === m ? "0 1px 4px rgba(15,23,42,0.10)" : "none",
+                    }}
+                  >
+                    {m === "signin" ? "Sign In" : "Sign Up"}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {signupDone && mode === "signup" ? (
               <Notice
@@ -186,29 +227,46 @@ export default function Login() {
                 title="Account created"
                 message="Check your email to confirm the account, then sign in."
               />
+            ) : resetSent && mode === "reset" ? (
+              <Notice
+                tone="success"
+                title="Reset email sent"
+                message="Check your email for a link to restore access to your account."
+              />
+            ) : passwordUpdated && mode === "updatePassword" ? (
+              <Notice
+                tone="success"
+                title="Password updated"
+                message="Your new password has been saved."
+              />
             ) : (
               <form onSubmit={(e) => void handleSubmit(e)}>
-                <AuthField label="Email">
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    autoFocus
-                    style={inputStyle}
-                  />
-                </AuthField>
+                {mode !== "updatePassword" && (
+                  <AuthField label="Email">
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                      autoFocus
+                      style={inputStyle}
+                    />
+                  </AuthField>
+                )}
 
-                <AuthField label="Password">
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    style={inputStyle}
-                  />
-                </AuthField>
+                {mode !== "reset" && (
+                  <AuthField label={mode === "updatePassword" ? "New password" : "Password"}>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      minLength={6}
+                      autoFocus={mode === "updatePassword"}
+                      style={inputStyle}
+                    />
+                  </AuthField>
+                )}
 
                 {error ? (
                   <Notice tone="error" title="Authentication error" message={error} />
@@ -219,10 +277,50 @@ export default function Login() {
                   disabled={loading}
                   style={primaryButtonStyle(loading)}
                 >
-                  {loading ? "Working..." : mode === "signin" ? "Sign In" : "Sign Up"}
+                  {loading
+                    ? "Working..."
+                    : mode === "signin"
+                      ? "Sign In"
+                      : mode === "signup"
+                        ? "Sign Up"
+                        : mode === "reset"
+                          ? "Send Reset Link"
+                          : "Update Password"}
                 </button>
               </form>
             )}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (mode === "updatePassword" && passwordUpdated) {
+                  navigate("/");
+                  return;
+                }
+                setMode(mode === "reset" ? "signin" : "reset");
+                setSignupDone(false);
+                setResetSent(false);
+                setPasswordUpdated(false);
+              }}
+              style={{
+                marginTop: "0.75rem",
+                width: "100%",
+                border: "none",
+                backgroundColor: "transparent",
+                color: "#4f46e5",
+                cursor: "pointer",
+                fontSize: "0.84rem",
+                fontWeight: 700,
+              }}
+            >
+              {mode === "updatePassword" && passwordUpdated
+                ? "Go to board"
+                : mode === "reset"
+                  ? "Back to sign in"
+                  : mode === "updatePassword"
+                    ? "Request a new reset email"
+                    : "Forgot password?"}
+            </button>
 
             <div
               style={{

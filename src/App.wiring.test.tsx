@@ -269,7 +269,7 @@ describe("Step 5 wiring verification", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Priority" }));
 
-    expect(await screen.findByText("High")).not.toBeNull();
+    expect((await screen.findAllByText("High")).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByPlaceholderText(/search cards/i), {
       target: { value: "" },

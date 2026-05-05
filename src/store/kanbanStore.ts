@@ -222,6 +222,15 @@ function buildJsonExport(state: KanbanStore): string {
   );
 }
 
+function createMoveActivity(message: string) {
+  return {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    type: "moved" as const,
+    message,
+  };
+}
+
 export const useKanbanStore = create<KanbanStore>((set, get) => {
   const syncBoard = async () => {
     const snapshot = await kanbanApi.getBoardSnapshot();
@@ -285,11 +294,58 @@ export const useKanbanStore = create<KanbanStore>((set, get) => {
       }, "Failed to create card.");
     },
     moveCard: async (cardId, targetColumnId) => {
-      await runMutation(async () => {
-        const updatedCard = await kanbanApi.moveCard(cardId, targetColumnId);
+      const state = get();
+      const card = state.cards.find((entry) => entry.id === cardId);
+      const targetColumn = state.columns.find((column) => column.id === targetColumnId);
 
-        return updatedCard !== null;
-      }, "Failed to move card.");
+      if (!card || !targetColumn) {
+        set({ error: "Failed to move card." });
+        return;
+      }
+
+      if (card.columnId === targetColumnId) {
+        set({ error: null });
+        return;
+      }
+
+      const previousCards = state.cards;
+      const movedAt = new Date().toISOString();
+      const optimisticCard: Card = {
+        ...card,
+        columnId: targetColumnId,
+        columnEnteredAt: movedAt,
+        moves: [
+          ...card.moves,
+          { at: movedAt, fromColumnId: card.columnId, toColumnId: targetColumnId },
+        ],
+        activities: [
+          ...card.activities,
+          createMoveActivity(`Moved to ${targetColumn.title}`),
+        ],
+      };
+
+      set({
+        cards: state.cards.map((entry) => entry.id === cardId ? optimisticCard : entry),
+        error: null,
+      });
+
+      try {
+        const updatedCard = await kanbanApi.moveCard(cardId, targetColumnId);
+        if (!updatedCard) {
+          set({ cards: previousCards, error: "Failed to move card." });
+          return;
+        }
+
+        set({
+          cards: get().cards.map((entry) => entry.id === cardId ? updatedCard : entry),
+          error: null,
+        });
+      } catch (error) {
+        set({
+          cards: previousCards,
+          error: getErrorMessage(error, "Failed to move card."),
+        });
+      }
     },
     deleteCard: async (cardId) => {
       await runMutation(async () => kanbanApi.deleteCard(cardId), "Failed to delete card.");
@@ -321,18 +377,28 @@ export const useKanbanStore = create<KanbanStore>((set, get) => {
       }, "Failed to update card.");
     },
     setFilter: async (payload) => {
-      await runMutation(async () => {
-        const filter = await kanbanApi.updateFilter(payload);
-        persistViewPreferences(filter, get().swimlaneGroupBy);
-        return true;
-      }, "Failed to update filter.");
+      const filter = {
+        ...get().filter,
+        ...payload,
+      };
+      set({ filter, error: null });
+      persistViewPreferences(filter, get().swimlaneGroupBy);
+
+      try {
+        await kanbanApi.updateFilter(payload);
+      } catch (error) {
+        set({ error: getErrorMessage(error, "Failed to update filter.") });
+      }
     },
     setSwimlaneGroupBy: async (groupBy) => {
-      await runMutation(async () => {
+      set({ swimlaneGroupBy: groupBy, error: null });
+      persistViewPreferences(get().filter, groupBy);
+
+      try {
         await kanbanApi.updateSwimlaneGroupBy(groupBy);
-        persistViewPreferences(get().filter, groupBy);
-        return true;
-      }, "Failed to update swimlane grouping.");
+      } catch (error) {
+        set({ error: getErrorMessage(error, "Failed to update swimlane grouping.") });
+      }
     },
     addColumn: async (input) => {
       const title = input.title.trim();
@@ -357,9 +423,36 @@ export const useKanbanStore = create<KanbanStore>((set, get) => {
       }, "Failed to delete column.");
     },
     reorderColumns: async (orderedIds) => {
-      await runMutation(async () => {
-        return kanbanApi.reorderColumns(orderedIds);
-      }, "Failed to reorder columns.");
+      const state = get();
+      const columnsById = new Map(state.columns.map((column) => [column.id, column]));
+      const orderedColumns = orderedIds
+        .map((id) => columnsById.get(id))
+        .filter((column): column is Column => Boolean(column));
+
+      if (orderedColumns.length !== state.columns.length) {
+        set({ error: "Failed to reorder columns." });
+        return;
+      }
+
+      const previousColumns = state.columns;
+      const optimisticColumns = orderedColumns.map((column, index) => ({
+        ...column,
+        order: index,
+      }));
+
+      set({ columns: optimisticColumns, error: null });
+
+      try {
+        const success = await kanbanApi.reorderColumns(orderedIds);
+        if (!success) {
+          set({ columns: previousColumns, error: "Failed to reorder columns." });
+        }
+      } catch (error) {
+        set({
+          columns: previousColumns,
+          error: getErrorMessage(error, "Failed to reorder columns."),
+        });
+      }
     },
     applyTemplate: async (templateId) => {
       await runMutation(async () => {

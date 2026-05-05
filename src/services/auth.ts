@@ -26,6 +26,24 @@ export const authService = {
     if (error) throw error;
   },
 
+  /** Send a password reset email. Throws on failure. */
+  async requestPasswordReset(email: string): Promise<void> {
+    const redirectTo = typeof window !== "undefined"
+      ? `${window.location.origin}/login?mode=update-password`
+      : undefined;
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      ...(redirectTo ? { redirectTo } : {}),
+    });
+    if (error) throw error;
+  },
+
+  /** Update the current user's password after a password recovery link. */
+  async updatePassword(password: string): Promise<User> {
+    const { data, error } = await supabase.auth.updateUser({ password });
+    if (error) throw error;
+    return data.user;
+  },
+
   /** Create a reviewer-friendly anonymous session. Throws on failure. */
   async signInAnonymously(): Promise<void> {
     const { error } = await supabase.auth.signInAnonymously();

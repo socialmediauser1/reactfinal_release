@@ -47,6 +47,36 @@ describe("kanbanStore", () => {
     expect(movedCard.moves[0].toColumnId).toBe("column-in-progress");
   });
 
+  it("moves a card optimistically without entering board loading state", async () => {
+    await useKanbanStore.getState().addCard({ title: "Fast drag" });
+    const card = useKanbanStore.getState().cards[0];
+
+    const move = useKanbanStore.getState().moveCard(card.id, "column-in-progress");
+
+    expect(useKanbanStore.getState().cards[0].columnId).toBe("column-in-progress");
+    expect(useKanbanStore.getState().loading).toBe(false);
+
+    await move;
+  });
+
+  it("reorders columns optimistically without entering board loading state", async () => {
+    const reorder = useKanbanStore.getState().reorderColumns([
+      "column-done",
+      "column-todo",
+      "column-in-progress",
+    ]);
+
+    expect(useKanbanStore.getState().columns.map((column) => column.id)).toEqual([
+      "column-done",
+      "column-todo",
+      "column-in-progress",
+    ]);
+    expect(useKanbanStore.getState().columns.map((column) => column.order)).toEqual([0, 1, 2]);
+    expect(useKanbanStore.getState().loading).toBe(false);
+
+    await reorder;
+  });
+
   it("rejects an empty card title with a visible error", async () => {
     await useKanbanStore.getState().addCard({ title: "   " });
 
@@ -94,6 +124,15 @@ describe("kanbanStore", () => {
     expect(state.filter.dueStatus).toBe("overdue");
     expect(state.filter.sortMode).toBe("priority");
     expect(state.swimlaneGroupBy).toBe("priority");
+  });
+
+  it("updates search filters without entering board loading state", async () => {
+    const update = useKanbanStore.getState().setFilter({ searchQuery: "flow" });
+
+    expect(useKanbanStore.getState().filter.searchQuery).toBe("flow");
+    expect(useKanbanStore.getState().loading).toBe(false);
+
+    await update;
   });
 
   it("creates and edits a card with due date, normalized tags, and activity", async () => {

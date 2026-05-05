@@ -7,6 +7,11 @@ import type { Board } from "../types";
 
 const USE_SUPABASE = !!import.meta.env.VITE_SUPABASE_URL;
 
+function formatBoardLabel(board: Board): string {
+  if (board.type === "personal") return "Personal";
+  return board.name.trim() || "Team Board";
+}
+
 export default function Layout() {
   const user    = useAuthStore((s) => s.user);
   const signOut = useAuthStore((s) => s.signOut);
@@ -210,7 +215,7 @@ function BoardSwitcher({ currentUserId }: { currentUserId: string }) {
         }}
       >
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {activeBoard ? activeBoard.name : "Select board"}
+          {activeBoard ? formatBoardLabel(activeBoard) : "Select board"}
         </span>
         <span style={{ fontSize: "0.6rem", color: dark ? "#94a3b8" : "#64748b", flexShrink: 0 }}>▾</span>
       </button>
@@ -369,7 +374,7 @@ function BoardItem({
           onClick={onSelect}
           style={{ flex: 1, fontSize: "0.875rem", fontWeight: isActive ? 600 : 400, color: "#1e293b", cursor: "pointer" }}
         >
-          {board.type === "team" ? "Team: " : "Personal: "}{board.name}
+          {formatBoardLabel(board)}
         </span>
 
         {isOwner && board.type === "team" && (

@@ -15,6 +15,8 @@ interface AuthActions {
   initialize: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  updatePassword: (password: string) => Promise<void>;
   continueAsGuest: () => Promise<void>;
   signOut: () => Promise<void>;
   updateDisplayName: (name: string) => Promise<void>;
@@ -53,6 +55,32 @@ export const useAuthStore = create<AuthStore>((set) => ({
       set({ loading: false, error: null });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : "Sign up failed." });
+    }
+  },
+
+  requestPasswordReset: async (email) => {
+    set({ loading: true, error: null });
+    try {
+      await authService.requestPasswordReset(email);
+      set({ loading: false, error: null });
+    } catch (err) {
+      set({
+        loading: false,
+        error: err instanceof Error ? err.message : "Failed to send password reset email.",
+      });
+    }
+  },
+
+  updatePassword: async (password) => {
+    set({ loading: true, error: null });
+    try {
+      const updatedUser = await authService.updatePassword(password);
+      set({ user: updatedUser, loading: false, error: null });
+    } catch (err) {
+      set({
+        loading: false,
+        error: err instanceof Error ? err.message : "Failed to update password.",
+      });
     }
   },
 

@@ -4,7 +4,7 @@ export type CardPriority = "low" | "medium" | "high";
 export type BoardType = "personal" | "team";
 export type DueStatusFilter = "all" | "overdue" | "today" | "upcoming" | "none";
 export type CardSortMode = "created" | "priority" | "dueDate" | "title";
-export type CardActivityType = "created" | "edited" | "moved" | "archived" | "restored" | "template";
+export type CardActivityType = "created" | "edited" | "moved" | "archived" | "restored" | "template" | "commented";
 export type BoardTemplateId = "personal" | "sprint" | "school" | "jobs";
 
 export interface Board {
@@ -37,6 +37,16 @@ export interface CardActivity {
   message: string;
 }
 
+export interface CardComment {
+  id: string;
+  cardId: string;
+  authorId?: string;
+  authorName: string;
+  authorEmail?: string;
+  body: string;
+  createdAt: string;
+}
+
 export interface Card {
   id: string;
   title: string;
@@ -51,6 +61,7 @@ export interface Card {
   columnEnteredAt: string;
   moves: CardMove[];
   activities: CardActivity[];
+  comments: CardComment[];
 }
 
 export interface ArchivedCardEntry {

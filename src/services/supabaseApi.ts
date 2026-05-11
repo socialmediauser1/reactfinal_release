@@ -34,6 +34,7 @@
  * alter table public.cards add column if not exists due_date date;
  * alter table public.cards add column if not exists tags text[] not null default '{}';
  * alter table public.cards add column if not exists activities jsonb not null default '[]'::jsonb;
+ * alter table public.cards add column if not exists comments jsonb not null default '[]'::jsonb;
  *
  * create table public.archived_cards (
  *   id uuid primary key,
@@ -52,6 +53,7 @@ import type {
   CardActivity,
   CardActivityType,
   CardCategory,
+  CardComment,
   CardMove,
   CardPriority,
   Column,
@@ -67,7 +69,14 @@ import type {
   UpdateColumnRequest,
 } from "./api";
 import { getBoardTemplate } from "./api";
-import { normalizeDueDate, normalizeTags } from "../lib/kanbanUtils";
+import {
+  normalizeDueDate,
+  normalizeTags,
+  validateCreateCardInput,
+  validateCreateColumnInput,
+  validateUpdateCardInput,
+  validateUpdateColumnInput,
+} from "../lib/kanbanUtils";
 
 let currentBoardId: string | null = null;
 
@@ -141,6 +150,7 @@ function rowToCard(row: any): Card {
     columnEnteredAt: row.column_entered_at as string,
     moves: (row.moves as CardMove[]) ?? [],
     activities: (row.activities as CardActivity[]) ?? [],
+    comments: Array.isArray(row.comments) ? (row.comments as CardComment[]) : [],
   };
 }
 
@@ -151,6 +161,7 @@ function normalizeStoredCard(card: Card): Card {
     tags: Array.isArray(card.tags) ? card.tags : [],
     moves: Array.isArray(card.moves) ? card.moves : [],
     activities: Array.isArray(card.activities) ? card.activities : [],
+    comments: Array.isArray(card.comments) ? card.comments : [],
   };
 }
 
@@ -201,10 +212,16 @@ function cardToInsertRow(card: Card, userId: string): Record<string, unknown> {
     column_entered_at: card.columnEnteredAt,
     moves: card.moves,
     activities: card.activities ?? [],
+    comments: card.comments ?? [],
   };
 }
 
 async function createSupabaseCard(payload: CreateCardRequest, activityType: CardActivityType = "created"): Promise<Card> {
+  const validation = validateCreateCardInput(payload);
+  if (!validation.value) {
+    throw new Error(validation.error ?? "Invalid card.");
+  }
+  const validatedPayload = validation.value;
   const userId = await getCurrentUserId();
   const boardId = requireBoardId();
 
@@ -215,25 +232,26 @@ async function createSupabaseCard(payload: CreateCardRequest, activityType: Card
     .order("order", { ascending: true })
     .limit(1);
   const defaultColumnId = columnRows?.[0]?.id as string | undefined;
-  const resolvedColumnId = payload.columnId ?? defaultColumnId ?? "";
+  const resolvedColumnId = validatedPayload.columnId ?? defaultColumnId ?? "";
   const now = new Date().toISOString();
 
   const row = {
     user_id: userId,
     column_id: resolvedColumnId,
-    title: payload.title.trim(),
-    description: payload.description ?? "",
-    category: payload.category ?? "feature",
-    assignee: payload.assignee?.trim() || null,
-    priority: payload.priority ?? "medium",
-    due_date: normalizeDueDate(payload.dueDate) ?? null,
-    tags: normalizeTags(payload.tags),
+    title: validatedPayload.title,
+    description: validatedPayload.description ?? "",
+    category: validatedPayload.category ?? "feature",
+    assignee: validatedPayload.assignee?.trim() || null,
+    priority: validatedPayload.priority ?? "medium",
+    due_date: normalizeDueDate(validatedPayload.dueDate) ?? null,
+    tags: normalizeTags(validatedPayload.tags),
     created_at: now,
     column_entered_at: now,
     moves: [],
     activities: [
       createActivity(activityType, activityType === "template" ? "Created from template" : "Created card"),
     ],
+    comments: [],
   };
 
   const { data, error } = await supabase.from("cards").insert(row).select().single();
@@ -303,20 +321,25 @@ export const supabaseKanbanApi: KanbanApiService = {
   },
 
   async updateCard(cardId: string, payload: UpdateCardRequest): Promise<Card | null> {
+    const validation = validateUpdateCardInput(payload);
+    if (!validation.value) {
+      throw new Error(validation.error ?? "Invalid card.");
+    }
+    const validatedPayload = validation.value;
     const { data: existing } = await supabase.from("cards").select("*").eq("id", cardId).single();
     const currentActivities = existing ? rowToCard(existing).activities : [];
     const updates: Record<string, unknown> = {};
-    if (payload.title !== undefined && payload.title.trim()) {
-      updates.title = payload.title.trim();
+    if (validatedPayload.title !== undefined && validatedPayload.title.trim()) {
+      updates.title = validatedPayload.title.trim();
     }
-    if (payload.description !== undefined) updates.description = payload.description;
-    if (payload.category !== undefined) updates.category = payload.category;
-    if (payload.assignee !== undefined) updates.assignee = payload.assignee.trim() || null;
-    if (payload.priority !== undefined) updates.priority = payload.priority;
+    if (validatedPayload.description !== undefined) updates.description = validatedPayload.description;
+    if (validatedPayload.category !== undefined) updates.category = validatedPayload.category;
+    if (validatedPayload.assignee !== undefined) updates.assignee = validatedPayload.assignee.trim() || null;
+    if (validatedPayload.priority !== undefined) updates.priority = validatedPayload.priority;
     if (Object.prototype.hasOwnProperty.call(payload, "dueDate")) {
-      updates.due_date = normalizeDueDate(payload.dueDate) ?? null;
+      updates.due_date = normalizeDueDate(validatedPayload.dueDate) ?? null;
     }
-    if (payload.tags !== undefined) updates.tags = normalizeTags(payload.tags);
+    if (validatedPayload.tags !== undefined) updates.tags = normalizeTags(validatedPayload.tags);
     updates.activities = [...currentActivities, createActivity("edited", "Updated card")];
 
     const { data, error } = await supabase
@@ -441,7 +464,51 @@ export const supabaseKanbanApi: KanbanApiService = {
     return card;
   },
 
+  async addCardComment(cardId: string, payload: { body: string }): Promise<CardComment | null> {
+    const body = payload.body.trim();
+    if (!body) return null;
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) throw new Error("Not authenticated");
+
+    const { data: existing, error: fetchErr } = await supabase
+      .from("cards")
+      .select("*")
+      .eq("id", cardId)
+      .single();
+    if (fetchErr || !existing) return null;
+
+    const currentCard = rowToCard(existing);
+    const comment: CardComment = {
+      id: crypto.randomUUID(),
+      cardId,
+      authorId: user.id,
+      authorName: user.email ?? "Board member",
+      authorEmail: user.email ?? undefined,
+      body,
+      createdAt: new Date().toISOString(),
+    };
+    const comments = [...currentCard.comments, comment];
+    const activities = [...currentCard.activities, createActivity("commented", "Added comment")];
+
+    const { error } = await supabase
+      .from("cards")
+      .update({ comments, activities })
+      .eq("id", cardId);
+
+    if (error) return null;
+    return comment;
+  },
+
   async createColumn(payload: CreateColumnRequest): Promise<Column> {
+    const validation = validateCreateColumnInput(payload);
+    if (!validation.value) {
+      throw new Error(validation.error ?? "Invalid column.");
+    }
+    const validatedPayload = validation.value;
     const userId = await getCurrentUserId();
     const boardId = requireBoardId();
 
@@ -457,10 +524,10 @@ export const supabaseKanbanApi: KanbanApiService = {
     const row: Record<string, unknown> = {
       user_id: userId,
       board_id: boardId,
-      title: payload.title.trim(),
+      title: validatedPayload.title,
       order: nextOrder,
     };
-    if (payload.wipLimit !== undefined) row.wip_limit = payload.wipLimit;
+    if (validatedPayload.wipLimit !== undefined) row.wip_limit = validatedPayload.wipLimit;
 
     const { data, error } = await supabase.from("columns").insert(row).select().single();
     if (error) throw error;
@@ -468,12 +535,17 @@ export const supabaseKanbanApi: KanbanApiService = {
   },
 
   async updateColumn(columnId: string, payload: UpdateColumnRequest): Promise<Column | null> {
+    const validation = validateUpdateColumnInput(payload);
+    if (!validation.value) {
+      throw new Error(validation.error ?? "Invalid column.");
+    }
+    const validatedPayload = validation.value;
     const boardId = requireBoardId();
     const updates: Record<string, unknown> = {};
-    if (payload.title?.trim()) updates.title = payload.title.trim();
-    if ("wipLimit" in payload) updates.wip_limit = payload.wipLimit ?? null;
+    if (validatedPayload.title?.trim()) updates.title = validatedPayload.title.trim();
+    if ("wipLimit" in payload) updates.wip_limit = validatedPayload.wipLimit ?? null;
 
-    if (payload.order !== undefined) {
+    if (validatedPayload.order !== undefined) {
       const { data: allCols } = await supabase
         .from("columns")
         .select("id, order")
@@ -482,7 +554,7 @@ export const supabaseKanbanApi: KanbanApiService = {
 
       if (allCols) {
         const without = allCols.filter((c) => c.id !== columnId);
-        const bounded = Math.max(0, Math.min(payload.order, without.length));
+        const bounded = Math.max(0, Math.min(validatedPayload.order, without.length));
         without.splice(bounded, 0, { id: columnId, order: bounded });
         for (let i = 0; i < without.length; i++) {
           await supabase.from("columns").update({ order: i }).eq("id", without[i].id);

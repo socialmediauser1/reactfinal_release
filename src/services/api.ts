@@ -5,12 +5,20 @@ import type {
   CardActivity,
   CardActivityType,
   CardCategory,
+  CardComment,
   CardPriority,
   Column,
   FilterState,
   SwimlaneGroupBy,
 } from "../types";
-import { normalizeDueDate, normalizeTags } from "../lib/kanbanUtils";
+import {
+  normalizeDueDate,
+  normalizeTags,
+  validateCreateCardInput,
+  validateCreateColumnInput,
+  validateUpdateCardInput,
+  validateUpdateColumnInput,
+} from "../lib/kanbanUtils";
 
 export interface CreateCardRequest {
   title: string;
@@ -42,6 +50,10 @@ export interface UpdateColumnRequest {
   title?: string;
   order?: number;
   wipLimit?: number;
+}
+
+export interface CreateCardCommentRequest {
+  body: string;
 }
 
 export interface BoardSnapshot {
@@ -78,6 +90,7 @@ export interface KanbanApiService {
   deleteCard: (cardId: string) => Promise<boolean>;
   archiveCard: (cardId: string) => Promise<ArchivedCardEntry | null>;
   restoreCard: (cardId: string, targetColumnId?: string) => Promise<Card | null>;
+  addCardComment: (cardId: string, payload: CreateCardCommentRequest) => Promise<CardComment | null>;
   createColumn: (payload: CreateColumnRequest) => Promise<Column>;
   updateColumn: (columnId: string, payload: UpdateColumnRequest) => Promise<Column | null>;
   deleteColumn: (columnId: string, fallbackColumnId?: string) => Promise<boolean>;
@@ -217,6 +230,7 @@ function cloneCard(card: Card): Card {
     tags: [...(card.tags ?? [])],
     moves: (card.moves ?? []).map((move) => ({ ...move })),
     activities: (card.activities ?? []).map((activity) => ({ ...activity })),
+    comments: (card.comments ?? []).map((comment) => ({ ...comment })),
   };
 }
 
@@ -250,22 +264,28 @@ function normalizeColumns(columns: Column[]): Column[] {
 }
 
 async function createMockCard(payload: CreateCardRequest, activityType: CardActivityType = "created"): Promise<Card> {
+  const validation = validateCreateCardInput(payload);
+  if (!validation.value) {
+    throw new Error(validation.error ?? "Invalid card.");
+  }
+  const validatedPayload = validation.value;
   const createdAt = new Date().toISOString();
-  const resolvedColumnId = payload.columnId ?? mockDb.columns[0]?.id ?? "column-todo";
+  const resolvedColumnId = validatedPayload.columnId ?? mockDb.columns[0]?.id ?? "column-todo";
   const card: Card = {
     id: crypto.randomUUID(),
-    title: payload.title.trim(),
-    description: payload.description ?? "",
-    category: payload.category ?? "feature",
+    title: validatedPayload.title,
+    description: validatedPayload.description ?? "",
+    category: validatedPayload.category ?? "feature",
     columnId: resolvedColumnId,
-    assignee: payload.assignee?.trim() || undefined,
-    priority: payload.priority ?? "medium",
-    dueDate: normalizeDueDate(payload.dueDate),
-    tags: normalizeTags(payload.tags),
+    assignee: validatedPayload.assignee?.trim() || undefined,
+    priority: validatedPayload.priority ?? "medium",
+    dueDate: normalizeDueDate(validatedPayload.dueDate),
+    tags: normalizeTags(validatedPayload.tags),
     createdAt,
     columnEnteredAt: createdAt,
     moves: [],
     activities: [createActivity(activityType, activityType === "template" ? "Created from template" : "Created card")],
+    comments: [],
   };
 
   mockDb.cards.push(card);
@@ -283,42 +303,47 @@ export const kanbanApi: KanbanApiService = {
   },
 
   async updateCard(cardId, payload) {
+    const validation = validateUpdateCardInput(payload);
+    if (!validation.value) {
+      throw new Error(validation.error ?? "Invalid card.");
+    }
+    const validatedPayload = validation.value;
     const card = mockDb.cards.find((entry) => entry.id === cardId);
 
     if (!card) {
       return null;
     }
 
-    if (payload.title !== undefined) {
-      const title = payload.title.trim();
+    if (validatedPayload.title !== undefined) {
+      const title = validatedPayload.title.trim();
 
       if (title) {
         card.title = title;
       }
     }
 
-    if (payload.description !== undefined) {
-      card.description = payload.description;
+    if (validatedPayload.description !== undefined) {
+      card.description = validatedPayload.description;
     }
 
-    if (payload.category !== undefined) {
-      card.category = payload.category;
+    if (validatedPayload.category !== undefined) {
+      card.category = validatedPayload.category;
     }
 
-    if (payload.assignee !== undefined) {
-      card.assignee = payload.assignee.trim() || undefined;
+    if (validatedPayload.assignee !== undefined) {
+      card.assignee = validatedPayload.assignee.trim() || undefined;
     }
 
-    if (payload.priority !== undefined) {
-      card.priority = payload.priority;
+    if (validatedPayload.priority !== undefined) {
+      card.priority = validatedPayload.priority;
     }
 
     if (Object.prototype.hasOwnProperty.call(payload, "dueDate")) {
-      card.dueDate = normalizeDueDate(payload.dueDate);
+      card.dueDate = normalizeDueDate(validatedPayload.dueDate);
     }
 
-    if (payload.tags !== undefined) {
-      card.tags = normalizeTags(payload.tags);
+    if (validatedPayload.tags !== undefined) {
+      card.tags = normalizeTags(validatedPayload.tags);
     }
 
     appendActivity(card, "edited", "Updated card");
@@ -424,12 +449,42 @@ export const kanbanApi: KanbanApiService = {
     return cloneCard(card);
   },
 
+  async addCardComment(cardId, payload) {
+    const body = payload.body.trim();
+    if (!body) {
+      return null;
+    }
+
+    const card = mockDb.cards.find((entry) => entry.id === cardId);
+    if (!card) {
+      return null;
+    }
+
+    const comment: CardComment = {
+      id: crypto.randomUUID(),
+      cardId,
+      authorName: "You",
+      body,
+      createdAt: new Date().toISOString(),
+    };
+
+    card.comments = [...(card.comments ?? []), comment];
+    appendActivity(card, "commented", "Added comment");
+
+    return { ...comment };
+  },
+
   async createColumn(payload) {
+    const validation = validateCreateColumnInput(payload);
+    if (!validation.value) {
+      throw new Error(validation.error ?? "Invalid column.");
+    }
+    const validatedPayload = validation.value;
     const column: Column = {
       id: crypto.randomUUID(),
-      title: payload.title.trim(),
+      title: validatedPayload.title,
       order: mockDb.columns.length,
-      ...(payload.wipLimit !== undefined ? { wipLimit: payload.wipLimit } : {}),
+      ...(validatedPayload.wipLimit !== undefined ? { wipLimit: validatedPayload.wipLimit } : {}),
     };
 
     mockDb.columns = normalizeColumns([...mockDb.columns, column]);
@@ -438,6 +493,11 @@ export const kanbanApi: KanbanApiService = {
   },
 
   async updateColumn(columnId, payload) {
+    const validation = validateUpdateColumnInput(payload);
+    if (!validation.value) {
+      throw new Error(validation.error ?? "Invalid column.");
+    }
+    const validatedPayload = validation.value;
     const index = mockDb.columns.findIndex((column) => column.id === columnId);
 
     if (index === -1) {
@@ -447,20 +507,20 @@ export const kanbanApi: KanbanApiService = {
     const current = mockDb.columns[index];
     const next: Column = {
       ...current,
-      ...(payload.title !== undefined && payload.title.trim()
-        ? { title: payload.title.trim() }
+      ...(validatedPayload.title !== undefined && validatedPayload.title.trim()
+        ? { title: validatedPayload.title.trim() }
         : {}),
       ...(Object.prototype.hasOwnProperty.call(payload, "wipLimit")
-        ? { wipLimit: payload.wipLimit }
+        ? { wipLimit: validatedPayload.wipLimit }
         : {}),
     };
 
     const updatedColumns = [...mockDb.columns];
     updatedColumns[index] = next;
 
-    if (payload.order !== undefined) {
+    if (validatedPayload.order !== undefined) {
       const withoutTarget = updatedColumns.filter((column) => column.id !== columnId);
-      const boundedOrder = Math.max(0, Math.min(payload.order, withoutTarget.length));
+      const boundedOrder = Math.max(0, Math.min(validatedPayload.order, withoutTarget.length));
       withoutTarget.splice(boundedOrder, 0, next);
       mockDb.columns = normalizeColumns(withoutTarget);
     } else {

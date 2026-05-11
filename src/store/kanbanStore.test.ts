@@ -91,6 +91,23 @@ describe("kanbanStore", () => {
     expect(useKanbanStore.getState().error).toBe("Card title must be 120 characters or fewer.");
   });
 
+  it("rejects task due dates outside the supported year range", async () => {
+    await useKanbanStore.getState().addCard({
+      title: "Impossible date",
+      dueDate: "2100-01-01",
+    });
+
+    expect(useKanbanStore.getState().cards).toHaveLength(0);
+    expect(useKanbanStore.getState().error).toBe("Due date year must be between 2000 and 2099.");
+  });
+
+  it("rejects over-limit column titles", async () => {
+    await useKanbanStore.getState().addColumn({ title: "x".repeat(41) });
+
+    expect(useKanbanStore.getState().columns.map((column) => column.title)).not.toContain("x".repeat(41));
+    expect(useKanbanStore.getState().error).toBe("Column title must be 40 characters or fewer.");
+  });
+
   it("archives and restores a card", async () => {
     await useKanbanStore.getState().addCard({ title: "Ship demo polish" });
     const card = useKanbanStore.getState().cards[0];
@@ -126,6 +143,44 @@ describe("kanbanStore", () => {
     expect(state.swimlaneGroupBy).toBe("priority");
   });
 
+  it("recovers from malformed saved view preferences", async () => {
+    window.localStorage.setItem("personal-kanban:view-preferences", "{not json");
+
+    await useKanbanStore.getState().initialize();
+
+    const state = useKanbanStore.getState();
+    expect(state.filter.dueStatus).toBe("all");
+    expect(state.filter.sortMode).toBe("created");
+    expect(state.swimlaneGroupBy).toBeNull();
+    expect(window.localStorage.getItem("personal-kanban:view-preferences")).toBeNull();
+  });
+
+  it("sanitizes unsupported saved view preference values", async () => {
+    window.localStorage.setItem(
+      "personal-kanban:view-preferences",
+      JSON.stringify({
+        filter: {
+          category: "bug",
+          searchQuery: "login",
+          tag: "frontend",
+          dueStatus: "yesterday",
+          sortMode: "random",
+        },
+        swimlaneGroupBy: "owner",
+      })
+    );
+
+    await useKanbanStore.getState().initialize();
+
+    const state = useKanbanStore.getState();
+    expect(state.filter.category).toBe("bug");
+    expect(state.filter.searchQuery).toBe("login");
+    expect(state.filter.tag).toBe("frontend");
+    expect(state.filter.dueStatus).toBe("all");
+    expect(state.filter.sortMode).toBe("created");
+    expect(state.swimlaneGroupBy).toBeNull();
+  });
+
   it("updates search filters without entering board loading state", async () => {
     const update = useKanbanStore.getState().setFilter({ searchQuery: "flow" });
 
@@ -156,6 +211,30 @@ describe("kanbanStore", () => {
     expect(edited.dueDate).toBeUndefined();
     expect(edited.tags).toEqual(["qa", "blocked"]);
     expect(edited.activities.map((activity) => activity.type)).toContain("edited");
+  });
+
+  it("adds comments to a card in chronological order", async () => {
+    await useKanbanStore.getState().addCard({ title: "Discuss this" });
+    const card = useKanbanStore.getState().cards[0];
+
+    await useKanbanStore.getState().addCardComment(card.id, { body: " First note " });
+    await useKanbanStore.getState().addCardComment(card.id, { body: "Second note" });
+
+    const updated = useKanbanStore.getState().cards[0];
+    expect(updated.comments.map((comment) => comment.body)).toEqual(["First note", "Second note"]);
+    expect(updated.comments[0].cardId).toBe(card.id);
+    expect(updated.comments[0].authorName).toBe("You");
+    expect(updated.activities.map((activity) => activity.type)).toContain("commented");
+  });
+
+  it("rejects empty card comments", async () => {
+    await useKanbanStore.getState().addCard({ title: "Discuss this" });
+    const card = useKanbanStore.getState().cards[0];
+
+    await useKanbanStore.getState().addCardComment(card.id, { body: "   " });
+
+    expect(useKanbanStore.getState().cards[0].comments).toHaveLength(0);
+    expect(useKanbanStore.getState().error).toBe("Comment cannot be empty.");
   });
 
   it("caps and normalizes tags before persistence", async () => {

@@ -5,12 +5,18 @@ import {
   resetKanbanApiMock,
   type BoardSnapshot,
   type CreateCardRequest,
+  type CreateCardCommentRequest,
   type UpdateCardRequest,
   type CreateColumnRequest,
   type UpdateColumnRequest,
 } from "../services/api";
 import { supabaseKanbanApi } from "../services/supabaseApi";
-import { validateCreateCardInput, validateUpdateCardInput } from "../lib/kanbanUtils";
+import {
+  validateCreateCardInput,
+  validateCreateColumnInput,
+  validateUpdateCardInput,
+  validateUpdateColumnInput,
+} from "../lib/kanbanUtils";
 import type {
   ArchivedCardEntry,
   BoardTemplateId,
@@ -45,6 +51,7 @@ interface KanbanActions {
   addCard: (input: CreateCardInput) => Promise<void>;
   editCard: (cardId: string, payload: UpdateCardRequest) => Promise<void>;
   moveCard: (cardId: string, targetColumnId: string) => Promise<void>;
+  addCardComment: (cardId: string, input: CreateCardCommentRequest) => Promise<void>;
   deleteCard: (cardId: string) => Promise<void>;
   archiveCard: (cardId: string) => Promise<void>;
   restoreArchivedCard: (cardId: string, targetColumnId?: string) => Promise<void>;
@@ -62,6 +69,19 @@ interface KanbanActions {
 }
 
 export type KanbanStore = KanbanState & KanbanActions;
+
+const DEFAULT_FILTER: FilterState = {
+  category: null,
+  swimlaneValue: null,
+  searchQuery: "",
+  tag: null,
+  dueStatus: "all",
+  sortMode: "created",
+};
+
+const DUE_STATUS_VALUES = new Set(["all", "overdue", "today", "upcoming", "none"]);
+const SORT_MODE_VALUES = new Set(["created", "priority", "dueDate", "title"]);
+const SWIMLANE_VALUES = new Set(["category", "assignee", "priority"]);
 
 function readCustomCategories(): string[] {
   if (typeof window === "undefined") return [];
@@ -109,13 +129,61 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function getViewPreferencesKey(): string {
+  if (typeof window === "undefined") return VIEW_PREFERENCES_KEY;
+  const activeBoardId = window.localStorage.getItem("activeBoardId");
+  return activeBoardId ? `${VIEW_PREFERENCES_KEY}:${activeBoardId}` : VIEW_PREFERENCES_KEY;
+}
+
+function normalizeTextOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function sanitizeViewPreferences(value: unknown): Pick<KanbanState, "filter" | "swimlaneGroupBy"> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Partial<Pick<KanbanState, "filter" | "swimlaneGroupBy">>;
+  const filterSource = source.filter && typeof source.filter === "object" && !Array.isArray(source.filter)
+    ? source.filter as Partial<FilterState>
+    : {};
+
+  return {
+    filter: {
+      ...DEFAULT_FILTER,
+      category: normalizeTextOrNull(filterSource.category),
+      swimlaneValue: normalizeTextOrNull(filterSource.swimlaneValue),
+      searchQuery: typeof filterSource.searchQuery === "string" ? filterSource.searchQuery : "",
+      tag: normalizeTextOrNull(filterSource.tag),
+      dueStatus: DUE_STATUS_VALUES.has(String(filterSource.dueStatus))
+        ? filterSource.dueStatus as FilterState["dueStatus"]
+        : DEFAULT_FILTER.dueStatus,
+      sortMode: SORT_MODE_VALUES.has(String(filterSource.sortMode))
+        ? filterSource.sortMode as FilterState["sortMode"]
+        : DEFAULT_FILTER.sortMode,
+    },
+    swimlaneGroupBy: SWIMLANE_VALUES.has(String(source.swimlaneGroupBy))
+      ? source.swimlaneGroupBy as SwimlaneGroupBy
+      : null,
+  };
+}
+
 function readViewPreferences(): Pick<KanbanState, "filter" | "swimlaneGroupBy"> | null {
   if (typeof window === "undefined") return null;
+  const key = getViewPreferencesKey();
   try {
-    const raw = window.localStorage.getItem(VIEW_PREFERENCES_KEY);
+    const raw = window.localStorage.getItem(key) ?? window.localStorage.getItem(VIEW_PREFERENCES_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as Pick<KanbanState, "filter" | "swimlaneGroupBy">;
+    const sanitized = sanitizeViewPreferences(JSON.parse(raw));
+    if (!sanitized) {
+      window.localStorage.removeItem(key);
+      if (key !== VIEW_PREFERENCES_KEY) window.localStorage.removeItem(VIEW_PREFERENCES_KEY);
+      return null;
+    }
+    window.localStorage.setItem(key, JSON.stringify(sanitized));
+    if (key !== VIEW_PREFERENCES_KEY) window.localStorage.removeItem(VIEW_PREFERENCES_KEY);
+    return sanitized;
   } catch {
+    window.localStorage.removeItem(key);
+    if (key !== VIEW_PREFERENCES_KEY) window.localStorage.removeItem(VIEW_PREFERENCES_KEY);
     return null;
   }
 }
@@ -123,7 +191,7 @@ function readViewPreferences(): Pick<KanbanState, "filter" | "swimlaneGroupBy"> 
 function persistViewPreferences(filter: FilterState, swimlaneGroupBy: SwimlaneGroupBy | null): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(
-    VIEW_PREFERENCES_KEY,
+    getViewPreferencesKey(),
     JSON.stringify({ filter, swimlaneGroupBy })
   );
 }
@@ -131,6 +199,8 @@ function persistViewPreferences(filter: FilterState, swimlaneGroupBy: SwimlaneGr
 function clearViewPreferences(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(VIEW_PREFERENCES_KEY);
+  const activeBoardId = window.localStorage.getItem("activeBoardId");
+  if (activeBoardId) window.localStorage.removeItem(`${VIEW_PREFERENCES_KEY}:${activeBoardId}`);
 }
 
 function mergeViewPreferences(
@@ -347,6 +417,29 @@ export const useKanbanStore = create<KanbanStore>((set, get) => {
         });
       }
     },
+    addCardComment: async (cardId, input) => {
+      const body = input.body.trim();
+      if (!body) {
+        set({ error: "Comment cannot be empty." });
+        return;
+      }
+
+      set({ loading: true, error: null });
+      try {
+        const comment = await kanbanApi.addCardComment(cardId, { body });
+        if (!comment) {
+          set({ loading: false, error: "Failed to add comment." });
+          return;
+        }
+        await syncBoard();
+        set({ loading: false });
+      } catch (error) {
+        set({
+          loading: false,
+          error: getErrorMessage(error, "Failed to add comment."),
+        });
+      }
+    },
     deleteCard: async (cardId) => {
       await runMutation(async () => kanbanApi.deleteCard(cardId), "Failed to delete card.");
     },
@@ -401,19 +494,24 @@ export const useKanbanStore = create<KanbanStore>((set, get) => {
       }
     },
     addColumn: async (input) => {
-      const title = input.title.trim();
-      if (!title) {
-        set({ error: "Column title cannot be empty." });
+      const validation = validateCreateColumnInput(input);
+      if (!validation.value) {
+        set({ error: validation.error ?? "Invalid column." });
         return;
       }
       await runMutation(async () => {
-        await kanbanApi.createColumn({ ...input, title });
+        await kanbanApi.createColumn(validation.value!);
         return true;
       }, "Failed to create column.");
     },
     editColumn: async (columnId, payload) => {
+      const validation = validateUpdateColumnInput(payload);
+      if (!validation.value) {
+        set({ error: validation.error ?? "Invalid column." });
+        return;
+      }
       await runMutation(async () => {
-        const result = await kanbanApi.updateColumn(columnId, payload);
+        const result = await kanbanApi.updateColumn(columnId, validation.value!);
         return result !== null;
       }, "Failed to update column.");
     },

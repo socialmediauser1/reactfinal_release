@@ -1,5 +1,10 @@
 import type { Card, CardPriority, CardSortMode, DueStatusFilter } from "../types";
-import type { CreateCardRequest, UpdateCardRequest } from "../services/api";
+import type {
+  CreateCardRequest,
+  CreateColumnRequest,
+  UpdateCardRequest,
+  UpdateColumnRequest,
+} from "../services/api";
 
 export const CARD_LIMITS = {
   title: 120,
@@ -7,6 +12,15 @@ export const CARD_LIMITS = {
   assignee: 120,
   tags: 8,
   tagLength: 24,
+};
+
+export const DUE_DATE_YEAR_LIMITS = {
+  min: 2000,
+  max: 2099,
+};
+
+export const COLUMN_LIMITS = {
+  title: 40,
 };
 
 const PRIORITY_ORDER: Record<CardPriority, number> = { high: 0, medium: 1, low: 2 };
@@ -26,7 +40,33 @@ export function normalizeTags(tags: string[] | string | undefined): string[] {
 
 export function normalizeDueDate(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  const isValidDate =
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day;
+  return isValidDate ? value : undefined;
+}
+
+export function isDueDateYearInRange(value: string): boolean {
+  const dueDate = normalizeDueDate(value);
+  if (!dueDate) return false;
+  const year = Number(dueDate.slice(0, 4));
+  return year >= DUE_DATE_YEAR_LIMITS.min && year <= DUE_DATE_YEAR_LIMITS.max;
+}
+
+function validateDueDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (!normalizeDueDate(value)) return "Due date must use YYYY-MM-DD format.";
+  if (!isDueDateYearInRange(value)) {
+    return `Due date year must be between ${DUE_DATE_YEAR_LIMITS.min} and ${DUE_DATE_YEAR_LIMITS.max}.`;
+  }
+  return null;
 }
 
 export function getLocalDateKey(date = new Date()): string {
@@ -84,8 +124,9 @@ export function validateCreateCardInput(input: CreateCardRequest): ValidationRes
     return { value: null, error: `Assignee must be ${CARD_LIMITS.assignee} characters or fewer.` };
   }
 
-  if (input.dueDate && !normalizeDueDate(input.dueDate)) {
-    return { value: null, error: "Due date must use YYYY-MM-DD format." };
+  const dueDateError = validateDueDate(input.dueDate);
+  if (dueDateError) {
+    return { value: null, error: dueDateError };
   }
 
   return {
@@ -126,14 +167,46 @@ export function validateUpdateCardInput(input: UpdateCardRequest): ValidationRes
   }
 
   if (Object.prototype.hasOwnProperty.call(input, "dueDate")) {
-    if (input.dueDate && !normalizeDueDate(input.dueDate)) {
-      return { value: null, error: "Due date must use YYYY-MM-DD format." };
+    const dueDateError = validateDueDate(input.dueDate);
+    if (dueDateError) {
+      return { value: null, error: dueDateError };
     }
     output.dueDate = normalizeDueDate(input.dueDate) ?? null;
   }
 
   if (input.tags !== undefined) {
     output.tags = normalizeTags(input.tags);
+  }
+
+  return { value: output, error: null };
+}
+
+export function validateCreateColumnInput(input: CreateColumnRequest): ValidationResult<CreateColumnRequest> {
+  const title = input.title.trim();
+  if (!title) return { value: null, error: "Column title cannot be empty." };
+  if (title.length > COLUMN_LIMITS.title) {
+    return { value: null, error: `Column title must be ${COLUMN_LIMITS.title} characters or fewer.` };
+  }
+
+  return {
+    value: {
+      ...input,
+      title,
+    },
+    error: null,
+  };
+}
+
+export function validateUpdateColumnInput(input: UpdateColumnRequest): ValidationResult<UpdateColumnRequest> {
+  const output: UpdateColumnRequest = { ...input };
+
+  if (input.title !== undefined) {
+    const title = input.title.trim();
+    if (!title) return { value: null, error: "Column title cannot be empty." };
+    if (title.length > COLUMN_LIMITS.title) {
+      return { value: null, error: `Column title must be ${COLUMN_LIMITS.title} characters or fewer.` };
+    }
+    output.title = title;
   }
 
   return { value: output, error: null };

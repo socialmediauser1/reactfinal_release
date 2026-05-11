@@ -11,7 +11,14 @@ import type {
   SwimlaneGroupBy,
 } from "../types";
 import type { UpdateCardRequest } from "../services/api";
-import { getDueLabel, getDueStatus, normalizeTags, sortCards } from "../lib/kanbanUtils";
+import {
+  COLUMN_LIMITS,
+  DUE_DATE_YEAR_LIMITS,
+  getDueLabel,
+  getDueStatus,
+  normalizeTags,
+  sortCards,
+} from "../lib/kanbanUtils";
 
 const BUILT_IN_CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   bug:     { bg: "#fef2f2", text: "#b91c1c", border: "#fca5a5" },
@@ -84,6 +91,7 @@ export default function Board() {
   const addCard          = useKanbanStore((s) => s.addCard);
   const editCard         = useKanbanStore((s) => s.editCard);
   const moveCard         = useKanbanStore((s) => s.moveCard);
+  const addCardComment   = useKanbanStore((s) => s.addCardComment);
   const archiveCard      = useKanbanStore((s) => s.archiveCard);
   const deleteCard       = useKanbanStore((s) => s.deleteCard);
   const setFilter        = useKanbanStore((s) => s.setFilter);
@@ -159,6 +167,24 @@ export default function Board() {
     if (payload.category) addCustomCategory(payload.category);
     await editCard(cardId, payload);
     if (!useKanbanStore.getState().error) setEditingCard(null);
+  };
+
+  const handleAddCardComment = async (cardId: string, body: string) => {
+    await addCardComment(cardId, { body });
+    if (!useKanbanStore.getState().error) {
+      const updated = useKanbanStore.getState().cards.find((card) => card.id === cardId);
+      if (updated) setEditingCard(updated);
+    }
+  };
+
+  const handleCreateColumnSubmit = async (title: string, wipLimit: number | undefined) => {
+    await addColumn({ title, wipLimit });
+    if (!useKanbanStore.getState().error) setCreatingColumn(false);
+  };
+
+  const handleEditColumnSubmit = async (columnId: string, title: string, wipLimit: number | undefined) => {
+    await editColumn(columnId, { title, wipLimit });
+    if (!useKanbanStore.getState().error) setColumnModalTarget(null);
   };
 
   const handleDeleteColumn = (columnId: string) => {
@@ -485,16 +511,15 @@ export default function Board() {
               tags: normalizeTags(v.tags),
             })
           }
+          onAddComment={(body) => void handleAddCardComment(editingCard.id, body)}
           onCancel={() => setEditingCard(null)}
         />
       )}
       {creatingColumn && (
         <ColumnFormModal
           mode="create"
-          onSubmit={(title, wipLimit) => {
-            void addColumn({ title, wipLimit });
-            setCreatingColumn(false);
-          }}
+          storeError={error}
+          onSubmit={(title, wipLimit) => void handleCreateColumnSubmit(title, wipLimit)}
           onCancel={() => setCreatingColumn(false)}
         />
       )}
@@ -505,10 +530,8 @@ export default function Board() {
             title: editingColumn.title,
             wipLimit: editingColumn.wipLimit !== undefined ? String(editingColumn.wipLimit) : "",
           }}
-          onSubmit={(title, wipLimit) => {
-            void editColumn(columnModalTarget, { title, wipLimit });
-            setColumnModalTarget(null);
-          }}
+          storeError={error}
+          onSubmit={(title, wipLimit) => void handleEditColumnSubmit(columnModalTarget, title, wipLimit)}
           onCancel={() => setColumnModalTarget(null)}
         />
       )}
@@ -842,6 +865,22 @@ function KanbanCard({
         {card.tags.map((tag) => (
           <TagBadge key={tag} label={tag} />
         ))}
+        {card.comments.length > 0 && (
+          <span
+            title={`${card.comments.length} comment${card.comments.length === 1 ? "" : "s"}`}
+            style={{
+              fontSize: "0.63rem",
+              fontWeight: 700,
+              padding: "0.1rem 0.35rem",
+              borderRadius: "4px",
+              backgroundColor: dark ? "#1e293b" : "#eef2ff",
+              color: dark ? "#c4b5fd" : "#4f46e5",
+              flexShrink: 0,
+            }}
+          >
+            {card.comments.length} comment{card.comments.length === 1 ? "" : "s"}
+          </span>
+        )}
         <span style={{ marginLeft: "auto", fontSize: "0.68rem", color: dark ? "#64748b" : "#9ca3af", whiteSpace: "nowrap" }}>
           {formatAge(card.createdAt)} · col {formatAge(card.columnEnteredAt)}
         </span>
@@ -993,7 +1032,7 @@ interface CardFormValues {
 
 function CardFormModal({
   mode, initialValues, activityCard, columns, defaultColumnId, isTeamBoard, members,
-  customCategories, storeError, onSubmit, onCancel,
+  customCategories, storeError, onSubmit, onAddComment, onCancel,
 }: {
   mode: "create" | "edit"; initialValues?: CardFormValues; columns: Column[];
   activityCard?: Card;
@@ -1001,7 +1040,9 @@ function CardFormModal({
   members: { email: string; displayName?: string }[];
   customCategories: string[];
   storeError: string | null;
-  onSubmit: (values: CardFormValues) => void; onCancel: () => void;
+  onSubmit: (values: CardFormValues) => void;
+  onAddComment?: (body: string) => void;
+  onCancel: () => void;
 }) {
   const loading = useKanbanStore((s) => s.loading);
   const [title,       setTitle]       = useState(initialValues?.title ?? "");
@@ -1013,6 +1054,8 @@ function CardFormModal({
   const [assignee,    setAssignee]    = useState(initialValues?.assignee ?? "");
   const [dueDate,     setDueDate]     = useState(initialValues?.dueDate ?? "");
   const [tags,        setTags]        = useState(initialValues?.tags ?? "");
+  const [commentBody, setCommentBody] = useState("");
+  const [commentError, setCommentError] = useState<string | null>(null);
   const [columnId,    setColumnId]    = useState(
     initialValues?.columnId ?? defaultColumnId ?? columns[0]?.id ?? ""
   );
@@ -1098,7 +1141,17 @@ function CardFormModal({
         </div>
 
         <Field label="Due date">
-          <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={inputStyle} />
+          <input
+            type="date"
+            value={dueDate}
+            min={`${DUE_DATE_YEAR_LIMITS.min}-01-01`}
+            max={`${DUE_DATE_YEAR_LIMITS.max}-12-31`}
+            onChange={(e) => setDueDate(e.target.value)}
+            style={inputStyle}
+          />
+          <span style={helperTextStyle}>
+            Years {DUE_DATE_YEAR_LIMITS.min}-{DUE_DATE_YEAR_LIMITS.max}
+          </span>
         </Field>
 
         <Field label="Tags">
@@ -1147,6 +1200,63 @@ function CardFormModal({
             </ul>
           </div>
         )}
+        {mode === "edit" && activityCard && (
+          <div style={{ marginTop: "0.5rem", padding: "0.75rem", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px" }}>
+            <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#374151", marginBottom: "0.45rem" }}>
+              Comments
+            </div>
+            {activityCard.comments.length > 0 ? (
+              <ul style={{ listStyle: "none", margin: "0 0 0.65rem", padding: 0, display: "flex", flexDirection: "column", gap: "0.45rem", maxHeight: "150px", overflowY: "auto" }}>
+                {[...activityCard.comments]
+                  .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+                  .map((comment) => (
+                    <li key={comment.id} style={{ fontSize: "0.75rem", color: "#475569", lineHeight: 1.4 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem", marginBottom: "0.15rem" }}>
+                        <strong style={{ color: "#334155" }}>{comment.authorName}</strong>
+                        <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>{formatTimestampShort(comment.createdAt)}</span>
+                      </div>
+                      <div>{comment.body}</div>
+                    </li>
+                  ))}
+              </ul>
+            ) : (
+              <p style={{ margin: "0 0 0.6rem", fontSize: "0.75rem", color: "#94a3b8" }}>
+                No comments yet.
+              </p>
+            )}
+            {commentError && (
+              <p style={{ margin: "0 0 0.45rem", color: "#b91c1c", fontSize: "0.75rem" }}>{commentError}</p>
+            )}
+            <textarea
+              aria-label="Comment"
+              value={commentBody}
+              onChange={(e) => {
+                setCommentBody(e.target.value);
+                setCommentError(null);
+              }}
+              rows={2}
+              placeholder="Add a comment"
+              style={{ ...inputStyle, resize: "vertical" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.45rem" }}>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  if (!commentBody.trim()) {
+                    setCommentError("Comment cannot be empty.");
+                    return;
+                  }
+                  onAddComment?.(commentBody);
+                  setCommentBody("");
+                }}
+                style={secondaryBtnStyle}
+              >
+                Add Comment
+              </button>
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.75rem" }}>
           <button type="button" onClick={onCancel} disabled={loading} style={cancelBtnStyle}>
             Cancel
@@ -1161,10 +1271,11 @@ function CardFormModal({
 }
 
 function ColumnFormModal({
-  mode, initialValues, onSubmit, onCancel,
+  mode, initialValues, storeError, onSubmit, onCancel,
 }: {
   mode: "create" | "edit";
   initialValues?: { title: string; wipLimit: string };
+  storeError: string | null;
   onSubmit: (title: string, wipLimit: number | undefined) => void;
   onCancel: () => void;
 }) {
@@ -1177,6 +1288,11 @@ function ColumnFormModal({
       <h2 style={{ margin: "0 0 1rem", fontSize: "1.05rem", fontWeight: 700, color: "#111827" }}>
         {mode === "create" ? "New Column" : "Edit Column"}
       </h2>
+      {storeError && (
+        <p style={{ margin: "0 0 0.75rem", color: "#b91c1c", fontSize: "0.84rem", backgroundColor: "#fef2f2", padding: "0.5rem 0.75rem", borderRadius: "6px" }}>
+          {storeError}
+        </p>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1186,7 +1302,17 @@ function ColumnFormModal({
         }}
       >
         <Field label="Title *">
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus style={inputStyle} />
+          <input
+            type="text"
+            value={title}
+            maxLength={COLUMN_LIMITS.title}
+            onChange={(e) => setTitle(e.target.value)}
+            autoFocus
+            style={inputStyle}
+          />
+          <span style={helperTextStyle}>
+            {title.trim().length}/{COLUMN_LIMITS.title} characters
+          </span>
         </Field>
         <Field label="WIP Limit (blank = no limit)">
           <input type="text" value={wipLimit} onChange={(e) => setWipLimit(e.target.value)} placeholder="e.g. 3" style={inputStyle} />
@@ -1326,6 +1452,13 @@ const toolbarSelectStyle: React.CSSProperties = {
   outline: "none",
 };
 
+const helperTextStyle: React.CSSProperties = {
+  display: "block",
+  marginTop: "0.25rem",
+  fontSize: "0.7rem",
+  color: "#64748b",
+};
+
 const cancelBtnStyle: React.CSSProperties = {
   padding: "0.45rem 1rem",
   backgroundColor: "#f3f4f6",
@@ -1335,6 +1468,17 @@ const cancelBtnStyle: React.CSSProperties = {
   fontSize: "0.875rem",
   color: "#374151",
   fontWeight: 500,
+};
+
+const secondaryBtnStyle: React.CSSProperties = {
+  padding: "0.38rem 0.8rem",
+  backgroundColor: "#fff",
+  border: "1px solid #cbd5e1",
+  borderRadius: "7px",
+  cursor: "pointer",
+  fontSize: "0.8rem",
+  color: "#334155",
+  fontWeight: 600,
 };
 
 const primaryBtnStyle = (disabled: boolean): React.CSSProperties => ({

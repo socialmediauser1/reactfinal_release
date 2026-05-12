@@ -216,6 +216,30 @@ function cardToInsertRow(card: Card, userId: string): Record<string, unknown> {
   };
 }
 
+function isMissingCommentsColumnError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const source = error as { code?: unknown; message?: unknown };
+  const code = typeof source.code === "string" ? source.code : "";
+  const message = typeof source.message === "string" ? source.message.toLowerCase() : "";
+  return code === "42703" && message.includes("comments");
+}
+
+async function insertCardRow(row: Record<string, unknown>) {
+  const { data, error } = await supabase.from("cards").insert(row).select().single();
+  if (!error) return data;
+
+  if (Object.prototype.hasOwnProperty.call(row, "comments") && isMissingCommentsColumnError(error)) {
+    const legacyRow = { ...row };
+    delete legacyRow.comments;
+
+    const retry = await supabase.from("cards").insert(legacyRow).select().single();
+    if (retry.error) throw retry.error;
+    return retry.data;
+  }
+
+  throw error;
+}
+
 async function createSupabaseCard(payload: CreateCardRequest, activityType: CardActivityType = "created"): Promise<Card> {
   const validation = validateCreateCardInput(payload);
   if (!validation.value) {
@@ -254,8 +278,7 @@ async function createSupabaseCard(payload: CreateCardRequest, activityType: Card
     comments: [],
   };
 
-  const { data, error } = await supabase.from("cards").insert(row).select().single();
-  if (error) throw error;
+  const data = await insertCardRow(row);
   return rowToCard(data);
 }
 
@@ -456,10 +479,11 @@ export const supabaseKanbanApi: KanbanApiService = {
       .eq("id", cardId);
     if (delErr) return null;
 
-    const { error: insErr } = await supabase
-      .from("cards")
-      .insert(cardToInsertRow(card, userId));
-    if (insErr) return null;
+    try {
+      await insertCardRow(cardToInsertRow(card, userId));
+    } catch {
+      return null;
+    }
 
     return card;
   },

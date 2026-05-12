@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import type { UpdateCardRequest } from "../services/api";
 import {
+  CARD_LIMITS,
   COLUMN_LIMITS,
   DUE_DATE_YEAR_LIMITS,
   getDueLabel,
@@ -1093,8 +1094,12 @@ function CardFormModal({
         <Field label="Title *">
           <input
             type="text" value={title} onChange={(e) => setTitle(e.target.value)}
+            maxLength={CARD_LIMITS.title}
             autoFocus style={inputStyle}
           />
+          <span style={helperTextStyle}>
+            {title.trim().length}/{CARD_LIMITS.title} characters
+          </span>
         </Field>
         <Field label="Description">
           <textarea
